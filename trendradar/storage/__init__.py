@@ -43,6 +43,7 @@ try:
         close_db_pool,
     )
     from trendradar.storage.mysql_backend import MySQLStorageBackend
+    from trendradar.storage.mysql_adapter import MySQLStorageBackendAdapter
     HAS_MYSQL = True
 except ImportError:
     Base = None
@@ -54,6 +55,7 @@ except ImportError:
     get_db_pool = None
     close_db_pool = None
     MySQLStorageBackend = None
+    MySQLStorageBackendAdapter = None
     HAS_MYSQL = False
 
 __all__ = [
@@ -72,6 +74,7 @@ __all__ = [
     "RemoteStorageBackend",
     "HAS_REMOTE",
     "MySQLStorageBackend",
+    "MySQLStorageBackendAdapter",
     "HAS_MYSQL",
     # 管理器
     "StorageManager",
@@ -86,3 +89,6 @@ __all__ = [
     "get_db_pool",
     "close_db_pool",
 ]
+
+
+

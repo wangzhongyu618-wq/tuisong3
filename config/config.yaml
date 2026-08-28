@@ -320,10 +320,25 @@ storage:
     secret_access_key: ""             # 访问密钥
     region: ""                        # 区域（可选，部分服务商需要）
 
+  # MySQL 数据库存储（可选，用于持久化原始数据和 AI 分析结果）
+  # 启用后，爬虫抓取的数据和 AI 分析结果会同步写入 MySQL
+  # 需要先初始化数据库表: python -m trendradar.storage.mysql_init
+  mysql:
+    enabled: false                    # 是否启用 MySQL 存储（true=启用, false=关闭）
+    host: "localhost"                 # 数据库主机地址
+    port: 3306                        # 数据库端口
+    username: "root"                  # 数据库用户名
+    password: "12345678"              # 数据库密码
+    database: "trendradar"            # 数据库名称
+    charset: "utf8mb4"                # 字符集
+    pool_size: 10                     # 连接池大小
+    max_overflow: 20                  # 超出 pool_size 的最大连接数
+
   # 数据拉取（从远程同步到本地，用于 MCP Server 等场景）
   pull:
     enabled: false                    # 是否启用启动时自动拉取（true=启用, false=关闭）
     days: 7                           # 拉取最近 N 天的数据
+
 
 
 # ===============================================================

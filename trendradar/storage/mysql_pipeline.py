@@ -179,29 +179,51 @@ class MySQLDataPipeline:
         try:
             records = []
             entities = analysis_result.get('entities', [])
+            skipped = 0
 
             for entity in entities:
-                if entity.get('type') != 'STOCK':
-                    continue  # 只处理股票实体
+                # 逐条容错：单条脏数据（字段缺失、评分无法转换等）仅跳过该条，
+                # 不因个别异常中断整个 AI 分析结果入库，避免拖垮定时管道。
+                try:
+                    if not isinstance(entity, dict) or entity.get('type') != 'STOCK':
+                        continue  # 只处理股票实体
 
-                record = {
-                    'stock_name': entity.get('name', ''),
-                    'stock_code': entity.get('code', ''),
-                    'sentiment_score': float(entity.get('sentiment_score', 0.0)),
-                    'alert_level': entity.get('alert_level', 'Low'),
-                    'summary_event': entity.get('event_summary', ''),
-                    'raw_data_id': raw_data_id,
-                    'analysis_metadata': {
-                        'context': entity.get('context', ''),
-                        'confidence': entity.get('confidence'),
-                        'source_text': entity.get('source_text', ''),
+                    # 情感评分安全转换：非法值回退 0.0（后端还会再做越界裁剪）
+                    try:
+                        sentiment_score = float(entity.get('sentiment_score', 0.0))
+                    except (TypeError, ValueError):
+                        skipped += 1
+                        logger.warning(
+                            f"[MySQL管道] 跳过情感评分非法实体: "
+                            f"sentiment_score={entity.get('sentiment_score')!r}"
+                        )
+                        sentiment_score = 0.0
+
+                    record = {
+                        'stock_name': entity.get('name', ''),
+                        'stock_code': entity.get('code', ''),
+                        'sentiment_score': sentiment_score,
+                        'alert_level': entity.get('alert_level', 'Low'),
+                        'summary_event': entity.get('event_summary', ''),
+                        'raw_data_id': raw_data_id,
+                        'analysis_metadata': {
+                            'context': entity.get('context', ''),
+                            'confidence': entity.get('confidence'),
+                            'source_text': entity.get('source_text', ''),
+                        }
                     }
-                }
-                records.append(record)
+                    records.append(record)
+
+                except Exception as e:
+                    skipped += 1
+                    logger.warning(
+                        f"[MySQL管道] 第 {len(records) + 1} 条 AI 分析实体解析失败，已跳过: {e}"
+                    )
 
             count = self.backend.save_financial_sentiment_batch(records)
             logger.info(
-                f"[MySQL管道] AI 分析结果已存储: count={count}"
+                f"[MySQL管道] AI 分析结果已存储: count={count} "
+                f"(解析跳过 {skipped} 条)"
             )
             return count
 
@@ -319,6 +341,17 @@ class MySQLDataPipeline:
     def health_check(self) -> bool:
         """健康检查"""
         return self.backend.health_check()
+
+    def cleanup_old_data(self, retention_days: int) -> int:
+        """清理超过保留期限的历史数据（按 created_at）。
+
+        Args:
+            retention_days: 保留天数（<=0 表示不清理）;若 >0 则删除更早记录。
+
+        Returns:
+            删除的记录总数。
+        """
+        return self.backend.cleanup_old_data(retention_days)
 
 
 # 全局管道实例

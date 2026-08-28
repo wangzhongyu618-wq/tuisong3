@@ -6,10 +6,11 @@ MySQL 存储后端 - 使用 SQLAlchemy ORM
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 
 from trendradar.storage.mysql_models import (
     Base,
@@ -41,7 +42,7 @@ class MySQLStorageBackend:
 
     # ========================================
     # 原始数据存储操作
-    # ========================================
+        # ========================================
 
     def save_raw_data(
         self,
@@ -50,6 +51,7 @@ class MySQLStorageBackend:
         url: str = "",
         source_id: str = "",
         source_name: str = "",
+        related_tickers: Optional[List[str]] = None,
         additional_data: Optional[Dict[str, Any]] = None,
     ) -> Optional[int]:
         """
@@ -61,6 +63,7 @@ class MySQLStorageBackend:
             url: 链接
             source_id: 来源 ID
             source_name: 来源名称
+            related_tickers: 关联股票代码列表（如 ["AAPL", "NVDA"]）
             additional_data: 额外数据（JSON）
 
         Returns:
@@ -74,6 +77,7 @@ class MySQLStorageBackend:
                     url=url,
                     source_id=source_id,
                     source_name=source_name,
+                    related_tickers=related_tickers,
                     additional_data=additional_data,
                 )
                 session.add(record)
@@ -89,14 +93,38 @@ class MySQLStorageBackend:
             logger.error(f"[MySQL存储] 保存原始数据失败: {e}", exc_info=True)
             return None
 
+    def _clean_text(self, value: Any, max_len: int = 0) -> str:
+        """
+        将任意值安全清洗为可入库的字符串，避免 None/特殊类型/超长触发数据库错误。
+
+        场景：网络抓取/AI 返回的内容可能夹杂 None、bytes、异常 Unicode 或超长文本。
+        """
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8", errors="replace")
+            except Exception:
+                value = repr(value)
+        text = str(value)
+        # 去除 Surrogate 字符（JSON/MySQL 无法存储）
+        try:
+            # 替换孤立代理项，防止 utf8mb4 编码失败
+            text = text.encode("utf-8", errors="replace").decode("utf-8")
+        except Exception:
+            text = text.replace("\ud800", "\ufffd")
+        if max_len > 0 and len(text) > max_len:
+            text = text[:max_len]
+        return text
+
     def save_raw_data_batch(
         self,
         records: List[Dict[str, Any]],
     ) -> int:
         """
-        批量保存原始数据
+        批量保存原始数据（逐条容错，单条脏数据不会拖垮整批）。
 
-        Args:
+                Args:
             records: 记录列表，每条记录的格式：
                 {
                     'source_type': str,
@@ -104,35 +132,74 @@ class MySQLStorageBackend:
                     'url': str,
                     'source_id': str,
                     'source_name': str,
+                    'related_tickers': List[str],  # 关联股票代码，如 ["AAPL"]
                     'additional_data': dict
                 }
 
         Returns:
             成功插入的记录数
         """
-        try:
-            with self.db_pool.session_scope() as session:
-                batch_records = []
-                for record in records:
-                    batch_records.append(
-                        RawDataFeed(
-                            source_type=record.get('source_type', ''),
-                            content=record.get('content', ''),
-                            url=record.get('url', ''),
-                            source_id=record.get('source_id', ''),
-                            source_name=record.get('source_name', ''),
-                            additional_data=record.get('additional_data'),
-                        )
-                    )
-                session.add_all(batch_records)
-                session.flush()
-                count = len(batch_records)
-                logger.info(f"[MySQL存储] 批量保存原始数据: {count} 条")
-                return count
+        saved = 0
+        with self.db_pool.session_scope() as session:
+            for idx, record in enumerate(records, start=1):
+                try:
+                    # 字段清洗：列宽以截断方式防御超长与非法类型
+                    source_type = self._clean_text(record.get('source_type'), 50)
+                    content = self._clean_text(record.get('content'), 10000)
+                    url = self._clean_text(record.get('url'), 1024)
+                    source_id = self._clean_text(record.get('source_id'), 100)
+                    source_name = self._clean_text(record.get('source_name'), 200)
+                    additional = record.get('additional_data')
 
-        except SQLAlchemyError as e:
-            logger.error(f"[MySQL存储] 批量保存原始数据失败: {e}", exc_info=True)
-            return 0
+                    # related_tickers 清洗：保证是合法的股票代码字符串列表
+                    raw_tickers = record.get('related_tickers') or []
+                    related_tickers = None
+                    if isinstance(raw_tickers, (list, tuple)):
+                        cleaned = []
+                        for tk in raw_tickers:
+                            if isinstance(tk, str) and tk.strip():
+                                tk_clean = tk.strip().upper()[:50]
+                                if tk_clean and tk_clean not in cleaned:
+                                    cleaned.append(tk_clean)
+                        related_tickers = cleaned[:20] if cleaned else None
+
+                    if not content or not source_id:
+                        logger.warning(
+                            f"[MySQL存储] 跳过无内容/无来源ID的第 {idx} 条记录"
+                        )
+                        continue
+
+                    row = RawDataFeed(
+                        source_type=source_type or 'hotlist_news',
+                        content=content,
+                        url=url,
+                        source_id=source_id or 'unknown',
+                        source_name=source_name,
+                        related_tickers=related_tickers,
+                        additional_data=additional,
+                    )
+                    session.add(row)
+                    session.flush()  # 触发约束校验与自增
+                    saved += 1
+                except SQLAlchemyError as e:
+                    session.rollback()
+                    logger.warning(
+                        f"[MySQL存储] 第 {idx} 条原始数据入库失败，已跳过: {e}"
+                    )
+                except (TypeError, ValueError, OverflowError) as e:
+                    session.rollback()
+                    logger.warning(
+                        f"[MySQL存储] 第 {idx} 条原始数据内容非法，已跳过: {e}"
+                    )
+                except Exception as e:  # 兜底，防止单条异常中断整个定时管道
+                    session.rollback()
+                    logger.warning(
+                        f"[MySQL存储] 第 {idx} 条原始数据未知异常，已跳过: {e}",
+                        exc_info=True,
+                    )
+
+        logger.info(f"[MySQL存储] 批量保存原始数据: 成功 {saved}/{len(records)} 条")
+        return saved
 
     def get_raw_data(self, data_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -231,7 +298,7 @@ class MySQLStorageBackend:
         records: List[Dict[str, Any]],
     ) -> int:
         """
-        批量保存金融情感分析结果
+        批量保存金融情感分析结果（逐条容错，单条脏数据不会拖垮整批）。
 
         Args:
             records: 记录列表，每条记录的格式：
@@ -248,45 +315,73 @@ class MySQLStorageBackend:
         Returns:
             成功插入的记录数
         """
-        try:
-            with self.db_pool.session_scope() as session:
-                batch_records = []
-                for record in records:
-                    sentiment_score = record.get('sentiment_score', 0.0)
-                    # 验证情感评分
+        saved = 0
+        with self.db_pool.session_scope() as session:
+            for idx, record in enumerate(records, start=1):
+                try:
+                    # 字段清洗与长度防御
+                    stock_name = self._clean_text(record.get('stock_name'), 200) or '未知'
+                    stock_code = self._clean_text(record.get('stock_code'), 50) or 'UNKNOWN'
+                    summary_event = self._clean_text(record.get('summary_event'), 10000)
+
+                    # 情感评分校验/裁剪
+                    try:
+                        sentiment_score = float(record.get('sentiment_score', 0.0))
+                    except (TypeError, ValueError):
+                        sentiment_score = 0.0
                     if not (-1.0 <= sentiment_score <= 1.0):
                         sentiment_score = max(-1.0, min(1.0, sentiment_score))
 
-                    # 解析告警级别
-                    alert_level = record.get('alert_level', 'Low')
-                    if isinstance(alert_level, str):
+                    # 告警级别解析（非法值回退 LOW）
+                    alert_level_in = record.get('alert_level', 'Low')
+                    if isinstance(alert_level_in, str):
                         try:
-                            alert_level_enum = AlertLevel[alert_level.upper()]
+                            alert_level_enum = AlertLevel[alert_level_in.upper()]
                         except KeyError:
                             alert_level_enum = AlertLevel.LOW
                     else:
-                        alert_level_enum = alert_level
+                        alert_level_enum = alert_level_in if alert_level_in in (
+                            AlertLevel.LOW, AlertLevel.MEDIUM, AlertLevel.HIGH
+                        ) else AlertLevel.LOW
 
-                    batch_records.append(
-                        FinancialSentiment(
-                            stock_name=record.get('stock_name', ''),
-                            stock_code=record.get('stock_code', ''),
-                            sentiment_score=sentiment_score,
-                            alert_level=alert_level_enum,
-                            summary_event=record.get('summary_event', ''),
-                            raw_data_id=record.get('raw_data_id'),
-                            analysis_metadata=record.get('analysis_metadata'),
-                        )
+                    raw_data_id = record.get('raw_data_id')
+                    if raw_data_id is not None:
+                        try:
+                            raw_data_id = int(raw_data_id)
+                        except (TypeError, ValueError):
+                            raw_data_id = None
+
+                    row = FinancialSentiment(
+                        stock_name=stock_name,
+                        stock_code=stock_code,
+                        sentiment_score=sentiment_score,
+                        alert_level=alert_level_enum,
+                        summary_event=summary_event,
+                        raw_data_id=raw_data_id,
+                        analysis_metadata=record.get('analysis_metadata'),
                     )
-                session.add_all(batch_records)
-                session.flush()
-                count = len(batch_records)
-                logger.info(f"[MySQL存储] 批量保存情感分析结果: {count} 条")
-                return count
+                    session.add(row)
+                    session.flush()
+                    saved += 1
+                except SQLAlchemyError as e:
+                    session.rollback()
+                    logger.warning(
+                        f"[MySQL存储] 第 {idx} 条情感分析入库失败，已跳过: {e}"
+                    )
+                except (TypeError, ValueError, OverflowError) as e:
+                    session.rollback()
+                    logger.warning(
+                        f"[MySQL存储] 第 {idx} 条情感分析内容非法，已跳过: {e}"
+                    )
+                except Exception as e:
+                    session.rollback()
+                    logger.warning(
+                        f"[MySQL存储] 第 {idx} 条情感分析未知异常，已跳过: {e}",
+                        exc_info=True,
+                    )
 
-        except SQLAlchemyError as e:
-            logger.error(f"[MySQL存储] 批量保存情感分析结果失败: {e}", exc_info=True)
-            return 0
+        logger.info(f"[MySQL存储] 批量保存情感分析结果: 成功 {saved}/{len(records)} 条")
+        return saved
 
     def get_financial_sentiment(self, sentiment_id: int) -> Optional[Dict[str, Any]]:
         """
@@ -442,10 +537,55 @@ class MySQLStorageBackend:
         """
         try:
             with self.db_pool.session_scope() as session:
-                session.execute("SELECT 1")
+                session.execute(text("SELECT 1"))
                 logger.debug("[MySQL存储] 健康检查成功")
                 return True
 
         except Exception as e:
             logger.error(f"[MySQL存储] 健康检查失败: {e}")
             return False
+
+    def cleanup_old_data(self, retention_days: int) -> int:
+        """
+        清理超过保留期限的历史数据（按记录创建时间 created_at）。
+
+        Args:
+            retention_days: 保留天数（<=0 表示不清理，直接返回 0）
+
+        Returns:
+            删除的记录总数（raw_data_feed 与 financial_sentiment 之和）。
+            注意：删除 raw_data_feed 时，其外键 `ON DELETE SET NULL`
+            会将其关联的 financial_sentiment.raw_data_id 置空，属预期行为。
+        """
+        if retention_days <= 0:
+            logger.info("[MySQL存储] retention_days<=0，跳过过期数据清理")
+            return 0
+
+        try:
+            cutoff = datetime.utcnow() - timedelta(days=retention_days)
+            with self.db_pool.session_scope() as session:
+                # 1) 先清理过期的情感分析记录（自身创建时间早于保留期）
+                sentiment_deleted = (
+                    session.query(FinancialSentiment)
+                    .filter(FinancialSentiment.created_at < cutoff)
+                    .delete(synchronize_session=False)
+                )
+                # 2) 清理过期的原始数据记录
+                raw_deleted = (
+                    session.query(RawDataFeed)
+                    .filter(RawDataFeed.created_at < cutoff)
+                    .delete(synchronize_session=False)
+                )
+
+                total = int(sentiment_deleted) + int(raw_deleted)
+                logger.info(
+                    f"[MySQL存储] 清理过期数据完成: "
+                    f"情感分析 {int(sentiment_deleted)} 条, "
+                    f"原始数据 {int(raw_deleted)} 条"
+                )
+                return total
+
+        except SQLAlchemyError as e:
+            logger.error(f"[MySQL存储] 清理过期数据失败: {e}", exc_info=True)
+            return 0
+

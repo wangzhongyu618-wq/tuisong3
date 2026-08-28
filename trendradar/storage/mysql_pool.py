@@ -66,7 +66,7 @@ class MySQLDatabasePool:
         # 连接字符串 (PyMySQL 驱动)
         self.connection_string = (
             f"mysql+pymysql://{self.username}:{self.password}@{self.host}:{self.port}/{self.database}"
-            f"?charset={self.charset}&autocommit=true"
+            f"?charset={self.charset}"
         )
 
         self.engine: Optional[Engine] = None

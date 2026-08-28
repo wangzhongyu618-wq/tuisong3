@@ -26,7 +26,6 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from trendradar.storage.mysql_models import Base, RawDataFeed, FinancialSentiment
 
 # 配置日志
 logging.basicConfig(
@@ -102,7 +101,7 @@ class MySQLDatabaseInitializer:
         """创建应用程序引擎（连接到指定数据库）"""
         connection_string = (
             f"mysql+pymysql://{self.username}:{self.password}@{self.host}:{self.port}/{self.database}"
-            f"?charset={self.charset}&autocommit=false"
+            f"?charset={self.charset}"
         )
         try:
             self.engine = create_engine(
@@ -115,6 +114,50 @@ class MySQLDatabaseInitializer:
             logger.error(f"[初始化] 无法创建应用程序引擎: {e}")
             return False
 
+    def _ensure_utf8mb4(self) -> bool:
+        """
+        确保会话连接与建表使用 utf8mb4，以支持 Emoji 等四字节字符。
+
+        措施：
+        1. 会话级执行 SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci；
+        2. 校验数据库默认字符集是否为 utf8mb4。
+        """
+        if not self.engine:
+            logger.error("[初始化] 引擎未初始化，无法校验字符集")
+            return False
+
+        try:
+            with self.engine.connect() as conn:
+                conn.execute(text("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci"))
+                conn.execute(text("SET CHARACTER SET utf8mb4"))
+
+                # 校验数据库默认字符集
+                result = conn.execute(
+                    text(
+                        "SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME "
+                        "FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = :db"
+                    ),
+                    {"db": self.database},
+                )
+                row = result.fetchone()
+                if row:
+                    charset, collation = row[0], row[1]
+                    if charset not in ("utf8mb4",):
+                        logger.warning(
+                            f"[初始化] 数据库默认字符集为 {charset}({collation})，"
+                            f"建议使用 utf8mb4 以支持 Emoji"
+                        )
+                    else:
+                        logger.info(
+                            f"[初始化] 数据库字符集校验通过: {charset}({collation})"
+                        )
+                else:
+                    logger.warning("[初始化] 未查询到数据库字符集信息")
+            return True
+        except Exception as e:
+            logger.error(f"[初始化] 设置/校验 utf8mb4 失败: {e}", exc_info=True)
+            return False
+
     def create_tables(self) -> bool:
         """创建所有数据表"""
         if not self.engine:
@@ -122,7 +165,10 @@ class MySQLDatabaseInitializer:
             return False
 
         try:
-            # 创建所有表
+            # 建表前确保会话与库均使用 utf8mb4（支持 Emoji 写入）
+            self._ensure_utf8mb4()
+
+            # 创建所有表（模型已通过 mysql_charset 显式指定 utf8mb4、utf8mb4_unicode_ci）
             Base.metadata.create_all(self.engine)
             logger.info("[初始化] 数据表创建成功")
 
@@ -131,10 +177,128 @@ class MySQLDatabaseInitializer:
             tables = inspector.get_table_names()
             logger.info(f"[初始化] 数据库中的表: {tables}")
 
+            # 打印每张表的字符集（确认 Emoji 兼容）
+            for table_name in tables:
+                if table_name not in ('raw_data_feed', 'financial_sentiment'):
+                    continue
+                try:
+                    t_info = inspector.get_table_options(table_name)
+                    charset = t_info.get('mysql_charset', 'N/A')
+                    collate = t_info.get('mysql_collate', 'N/A')
+                    logger.info(
+                        f"[初始化] 表 {table_name} 字符集: {charset} / 排序规则: {collate}"
+                    )
+                except Exception:
+                    pass
+
             return True
 
         except Exception as e:
             logger.error(f"[初始化] 创建数据表失败: {e}", exc_info=True)
+            return False
+
+        # 已知的新增列迁移（旧表平滑升级，不丢数据）
+    COLUMN_MIGRATIONS = {
+        'raw_data_feed': {
+            # 列名: (ALTER TABLE 子句, 说明)
+            'related_tickers': (
+                "ADD COLUMN `related_tickers` TEXT NULL COMMENT '关联股票代码列表(JSON数组)' AFTER `source_name`",
+                '关联股票代码列表'
+            ),
+        },
+    }
+
+    def reconcile_schema(self) -> bool:
+        """修复旧表结构与 ORM 定义不一致的问题。
+
+        策略：
+        1. 缺失表 → 走 create_tables 全新建表；
+        2. 表存在但缺列 → 先尝试 ALTER TABLE 增量迁移（保留数据），
+           迁移失败（如表损坏）才回退到 DROP + 重建；
+        """
+        if not self.engine:
+            logger.error("[初始化] 引擎未初始化")
+            return False
+
+        try:
+            inspector = inspect(self.engine)
+            tables = set(inspector.get_table_names())
+            required = {
+                'raw_data_feed': ['id', 'source_type', 'content', 'url', 'source_id', 'source_name', 'additional_data', 'created_at', 'updated_at'],
+                'financial_sentiment': ['id', 'stock_name', 'stock_code', 'sentiment_score', 'alert_level', 'summary_event', 'raw_data_id', 'analysis_metadata', 'created_at', 'updated_at'],
+            }
+
+            missing_tables = [t for t in required if t not in tables]
+            if missing_tables:
+                logger.warning(f"[初始化] 缺失表: {missing_tables}，将执行建表")
+                return self.create_tables()
+
+            # 收集所有缺失列
+            missing_columns = {}
+            for table_name, required_cols in required.items():
+                columns = [col['name'] for col in inspector.get_columns(table_name)]
+                missing = [c for c in required_cols if c not in columns]
+                if missing:
+                    missing_columns[table_name] = missing
+
+            if not missing_columns:
+                logger.info("[初始化] 表结构已满足 ORM 定义，无需迁移")
+                return True
+
+            # 第一优先：已知列的增量 ALTER 迁移（不丢数据）
+            all_missing = [c for cols in missing_columns.values() for c in cols]
+            known_migrations = {
+                (t, c): stmt
+                for t, cols in self.COLUMN_MIGRATIONS.items()
+                for c, (stmt, _) in cols.items()
+            }
+            unknown_missing = [
+                c for c in all_missing
+                if not any((t, c) in known_migrations for t in missing_columns)
+            ]
+
+            migrated_any = False
+            for table_name, cols in missing_columns.items():
+                for col in cols:
+                    key = (table_name, col)
+                    if key in known_migrations:
+                        stmt, desc = self.COLUMN_MIGRATIONS[table_name][col]
+                        try:
+                            with self.engine.begin() as conn:
+                                conn.execute(text(f"ALTER TABLE `{table_name}` {stmt}"))
+                            logger.info(f"[初始化] 增量迁移成功: {table_name}.{col} ({desc})，已有数据保留")
+                            migrated_any = True
+                        except Exception as e:
+                            logger.warning(f"[初始化] 增量迁移失败 {table_name}.{col}: {e}")
+
+            # 全部缺失列都有已知迁移且执行成功 → 完成
+            if migrated_any and not unknown_missing:
+                # 重新验证
+                inspector2 = inspect(self.engine)
+                all_ok = True
+                for table_name, required_cols in required.items():
+                    columns = [c['name'] for c in inspector2.get_columns(table_name)]
+                    if any(c not in columns for c in required_cols):
+                        all_ok = False
+                if all_ok:
+                    logger.info("[初始化] 增量迁移完成，表结构已满足 ORM 定义")
+                    return True
+
+            # 兜底：存在无法增量迁移的缺失列 → 重建（丢数据，仅作最后手段）
+            logger.warning(
+                f"[初始化] 存在无法增量迁移的缺失列: {unknown_missing or '迁移后仍缺失'}，回退到重建表（数据将丢失）"
+            )
+            with self.engine.begin() as conn:
+                for table_name in ['financial_sentiment', 'raw_data_feed']:
+                    if table_name in inspector.get_table_names():
+                        conn.execute(text(f"DROP TABLE IF EXISTS `{table_name}`"))
+                        logger.warning(f"[初始化] 已删除旧表: {table_name}")
+
+            logger.info("[初始化] 开始重建表结构")
+            return self.create_tables()
+
+        except Exception as e:
+            logger.error(f"[初始化] 修复表结构失败: {e}", exc_info=True)
             return False
 
     def verify_tables(self) -> bool:
@@ -165,9 +329,9 @@ class MySQLDatabaseInitializer:
 
                 # 检查主要列
                 if table_name == 'raw_data_feed':
-                    required_cols = ['id', 'source_type', 'content', 'url', 'source_id', 'created_at']
+                    required_cols = ['id', 'source_type', 'content', 'url', 'source_id', 'source_name', 'related_tickers', 'additional_data', 'created_at', 'updated_at']
                 elif table_name == 'financial_sentiment':
-                    required_cols = ['id', 'stock_name', 'stock_code', 'sentiment_score', 'alert_level', 'raw_data_id', 'created_at']
+                    required_cols = ['id', 'stock_name', 'stock_code', 'sentiment_score', 'alert_level', 'summary_event', 'raw_data_id', 'analysis_metadata', 'created_at', 'updated_at']
                 else:
                     required_cols = []
 
@@ -193,6 +357,7 @@ class MySQLDatabaseInitializer:
             ("创建管理员引擎", self._create_admin_engine),
             ("创建数据库", self._create_database),
             ("创建应用程序引擎", self._create_application_engine),
+            ("修正表结构", self.reconcile_schema),
             ("创建数据表", self.create_tables),
             ("验证表结构", self.verify_tables),
         ]

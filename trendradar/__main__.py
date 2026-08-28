@@ -983,7 +983,49 @@ class NewsAnalyzer:
         if txt_file:
             print(f"TXT 快照已保存: {txt_file}")
 
+        # 保存到 MySQL（如果启用）
+        self._save_to_mysql(news_data, id_to_name)
+
         return results, id_to_name, failed_ids
+
+    def _save_to_mysql(self, news_data, id_to_name: Dict) -> None:
+        """将爬取数据保存到 MySQL（如果启用）"""
+        try:
+            pipeline = self.ctx.get_mysql_pipeline()
+            if pipeline is None:
+                return
+
+            # 将 NewsData 转换为 MySQL 管道需要的格式
+            # news_data 是 NewsData 对象，items 按来源ID分组
+            total_count = 0
+            for platform_id, platform_items in news_data.items.items():
+                source_name = id_to_name.get(platform_id, platform_id)
+                items = []
+                for item in platform_items:
+                    items.append({
+                        'title': item.title,
+                        'url': item.url,
+                        'rank': item.rank,
+                        'ranks': item.ranks,
+                        'crawl_time': item.crawl_time,
+                        'rank_timeline': item.rank_timeline,
+                    })
+
+                if items:
+                    count = pipeline.ingest_crawled_news(
+                        items,
+                        source_id=platform_id,
+                        source_name=source_name,
+                    )
+                    total_count += count
+
+            if total_count > 0:
+                print(f"[MySQL] 热榜新闻已存储: {total_count} 条")
+        except Exception as e:
+            print(f"[MySQL] 保存热榜数据失败: {e}")
+
+
+
 
     def _crawl_rss_data(self) -> Tuple[Optional[List[Dict]], Optional[List[Dict]], Optional[List[Dict]], set]:
         """

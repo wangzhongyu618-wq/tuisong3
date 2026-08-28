@@ -367,10 +367,12 @@ def _load_storage_config(config_data: Dict) -> Dict:
     local = storage.get("local", {})
     remote = storage.get("remote", {})
     pull = storage.get("pull", {})
+    mysql = storage.get("mysql", {})
 
     txt_enabled_env = _get_env_bool("STORAGE_TXT_ENABLED")
     html_enabled_env = _get_env_bool("STORAGE_HTML_ENABLED")
     pull_enabled_env = _get_env_bool("PULL_ENABLED")
+    mysql_enabled_env = _get_env_bool("MYSQL_ENABLED")
 
     return {
         "BACKEND": _get_env_str("STORAGE_BACKEND") or storage.get("backend", "auto"),
@@ -382,6 +384,7 @@ def _load_storage_config(config_data: Dict) -> Dict:
         "LOCAL": {
             "DATA_DIR": local.get("data_dir", "output"),
             "RETENTION_DAYS": _get_env_int("LOCAL_RETENTION_DAYS") or local.get("retention_days", 0),
+
         },
         "REMOTE": {
             "ENDPOINT_URL": _get_env_str("S3_ENDPOINT_URL") or remote.get("endpoint_url", ""),
@@ -391,11 +394,24 @@ def _load_storage_config(config_data: Dict) -> Dict:
             "REGION": _get_env_str("S3_REGION") or remote.get("region", ""),
             "RETENTION_DAYS": _get_env_int("REMOTE_RETENTION_DAYS") or remote.get("retention_days", 0),
         },
+        # MySQL 数据库存储（持久化原始数据和 AI 分析结果）
+        "MYSQL": {
+            "ENABLED": mysql_enabled_env if mysql_enabled_env is not None else mysql.get("enabled", False),
+            "HOST": _get_env_str("MYSQL_HOST") or mysql.get("host", "localhost"),
+            "PORT": _get_env_int("MYSQL_PORT") or mysql.get("port", 3306),
+            "USERNAME": _get_env_str("MYSQL_USERNAME") or mysql.get("username", "root"),
+            "PASSWORD": _get_env_str("MYSQL_PASSWORD") or mysql.get("password", ""),
+            "DATABASE": _get_env_str("MYSQL_DATABASE") or mysql.get("database", "trendradar"),
+            "CHARSET": _get_env_str("MYSQL_CHARSET") or mysql.get("charset", "utf8mb4"),
+            "POOL_SIZE": _get_env_int("MYSQL_POOL_SIZE") or mysql.get("pool_size", 10),
+            "MAX_OVERFLOW": _get_env_int("MYSQL_MAX_OVERFLOW") or mysql.get("max_overflow", 20),
+        },
         "PULL": {
             "ENABLED": pull_enabled_env if pull_enabled_env is not None else pull.get("enabled", False),
             "DAYS": _get_env_int("PULL_DAYS") or pull.get("days", 7),
         },
     }
+
 
 
 def _load_webhook_config(config_data: Dict) -> Dict:

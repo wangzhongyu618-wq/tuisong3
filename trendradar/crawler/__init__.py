@@ -4,5 +4,6 @@
 """
 
 from trendradar.crawler.fetcher import DataFetcher
+from trendradar.crawler.xueqiu_fetcher import XueqiuSeleniumFetcher
 
-__all__ = ["DataFetcher"]
+__all__ = ["DataFetcher", "XueqiuSeleniumFetcher"]

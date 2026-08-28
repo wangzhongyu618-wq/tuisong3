@@ -39,12 +39,13 @@ class StorageManager:
         pull_enabled: bool = False,
         pull_days: int = 0,
         timezone: str = DEFAULT_TIMEZONE,
+        mysql_conn_params: Optional[dict] = None,
     ):
         """
         初始化存储管理器
 
         Args:
-            backend_type: 存储后端类型 (local / remote / auto)
+            backend_type: 存储后端类型 (local / remote / auto / mysql)
             data_dir: 本地数据目录
             enable_txt: 是否启用 TXT 快照
             enable_html: 是否启用 HTML 报告
@@ -54,6 +55,7 @@ class StorageManager:
             pull_enabled: 是否启用启动时自动拉取
             pull_days: 拉取最近 N 天的数据
             timezone: 时区配置
+            mysql_conn_params: MySQL 连接参数（host/port/username/password/database 等）
         """
         self.backend_type = backend_type
         self.data_dir = data_dir
@@ -65,6 +67,7 @@ class StorageManager:
         self.pull_enabled = pull_enabled
         self.pull_days = pull_days
         self.timezone = timezone
+        self.mysql_conn_params = mysql_conn_params or {}
 
         self._backend: Optional[StorageBackend] = None
         self._remote_backend: Optional[StorageBackend] = None
@@ -147,6 +150,19 @@ class StorageManager:
             print(f"[存储管理器] 远程后端初始化失败: {e}")
             return None
 
+    def _create_mysql_backend(self) -> Optional[StorageBackend]:
+        """创建 MySQL 存储后端（对齐 StorageManager 统一接口）。"""
+        try:
+            from trendradar.storage.mysql_adapter import MySQLStorageBackendAdapter
+
+            return MySQLStorageBackendAdapter(conn_params=self.mysql_conn_params)
+        except ImportError as e:
+            print(f"[存储管理器] MySQL 后端导入失败: {e}")
+            return None
+        except Exception as e:
+            print(f"[存储管理器] MySQL 后端初始化失败: {e}")
+            return None
+
     def get_backend(self) -> StorageBackend:
         """获取存储后端实例"""
         if self._backend is None:
@@ -158,6 +174,14 @@ class StorageManager:
                     print(f"[存储管理器] 使用远程存储后端")
                 else:
                     print("[存储管理器] 回退到本地存储")
+                    resolved_type = "local"
+
+            if resolved_type == "mysql":
+                self._backend = self._create_mysql_backend()
+                if self._backend:
+                    print("[存储管理器] 使用 MySQL 存储后端")
+                else:
+                    print("[存储管理器] MySQL 后端不可用，回退到本地存储")
                     resolved_type = "local"
 
             if resolved_type == "local" or self._backend is None:
@@ -200,6 +224,15 @@ class StorageManager:
 
     def save_news_data(self, data: NewsData) -> bool:
         """保存新闻数据"""
+        return self.get_backend().save_news_data(data)
+
+    def save(self, data) -> bool:
+        """
+        统一保存入口（别名）。
+
+        传入 NewsData / RSSData 时分别写入对应表；
+        仅在与 StorageManager 对齐的存储链路上有意义（local -> SQLite，mysql -> raw_data_feed）。
+        """
         return self.get_backend().save_news_data(data)
 
     def save_rss_data(self, data: RSSData) -> bool:
@@ -381,12 +414,13 @@ def get_storage_manager(
     pull_days: int = 0,
     timezone: str = DEFAULT_TIMEZONE,
     force_new: bool = False,
+    mysql_conn_params: Optional[dict] = None,
 ) -> StorageManager:
     """
     获取存储管理器单例
 
     Args:
-        backend_type: 存储后端类型
+        backend_type: 存储后端类型 (local / remote / auto / mysql)
         data_dir: 本地数据目录
         enable_txt: 是否启用 TXT 快照
         enable_html: 是否启用 HTML 报告
@@ -397,6 +431,7 @@ def get_storage_manager(
         pull_days: 拉取最近 N 天的数据
         timezone: 时区配置
         force_new: 是否强制创建新实例
+        mysql_conn_params: MySQL 连接参数（host/port/username/password/database 等）
 
     Returns:
         StorageManager 实例
@@ -415,6 +450,7 @@ def get_storage_manager(
             pull_enabled=pull_enabled,
             pull_days=pull_days,
             timezone=timezone,
+            mysql_conn_params=mysql_conn_params,
         )
 
     return _storage_manager

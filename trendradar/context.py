@@ -41,7 +41,8 @@ from trendradar.notification import (
 from trendradar.ai import AITranslator
 from trendradar.ai.filter import AIFilterResult
 from trendradar.ai.filter_pipeline import AIFilterPipeline, _TagExtractionError
-from trendradar.storage import get_storage_manager
+from trendradar.storage import get_storage_manager, HAS_MYSQL
+
 
 
 class AppContext:
@@ -76,6 +77,8 @@ class AppContext:
         self.config = config
         self._storage_manager = None
         self._scheduler = None
+        self._mysql_pipeline = None
+
 
     # === 配置访问 ===
 
@@ -213,6 +216,51 @@ class AppContext:
         output_dir = Path("output") / subfolder / self.format_date()
         output_dir.mkdir(parents=True, exist_ok=True)
         return str(output_dir / filename)
+
+    # === MySQL 存储 ===
+
+    @property
+    def mysql_config(self) -> Dict:
+        """获取 MySQL 配置"""
+        return self.config.get("STORAGE", {}).get("MYSQL", {})
+
+    @property
+    def mysql_enabled(self) -> bool:
+        """MySQL 存储是否启用"""
+        return bool(self.mysql_config.get("ENABLED", False)) and HAS_MYSQL
+
+    def get_mysql_pipeline(self):
+        """
+        获取 MySQL 数据管道（延迟初始化，单例）
+
+        仅在 storage.mysql.enabled=true 时可用。
+        返回 None 表示未启用或初始化失败。
+        """
+        if not self.mysql_enabled:
+            return None
+        if self._mysql_pipeline is None:
+            try:
+                from trendradar.storage.mysql_pipeline import init_mysql_pipeline
+
+                mysql_cfg = self.mysql_config
+                self._mysql_pipeline = init_mysql_pipeline(
+                    host=mysql_cfg.get("HOST", "localhost"),
+                    port=int(mysql_cfg.get("PORT", 3306)),
+                    username=mysql_cfg.get("USERNAME", "root"),
+                    password=mysql_cfg.get("PASSWORD", ""),
+                    database=mysql_cfg.get("DATABASE", "trendradar"),
+                    charset=mysql_cfg.get("CHARSET", "utf8mb4"),
+                    pool_size=int(mysql_cfg.get("POOL_SIZE", 10)),
+                    max_overflow=int(mysql_cfg.get("MAX_OVERFLOW", 20)),
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(
+                    f"[MySQL] 数据管道初始化失败: {e}", exc_info=True
+                )
+                self._mysql_pipeline = None
+        return self._mysql_pipeline
+
 
     # === 数据处理 ===
 
@@ -535,3 +583,17 @@ class AppContext:
             self._storage_manager.cleanup_old_data()
             self._storage_manager.cleanup()
             self._storage_manager = None
+
+        # 关闭 MySQL 连接池
+        if self._mysql_pipeline is not None:
+            try:
+                from trendradar.storage.mysql_pool import close_db_pool
+                close_db_pool()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"[MySQL] 关闭连接池失败: {e}"
+                )
+            self._mysql_pipeline = None
+
+

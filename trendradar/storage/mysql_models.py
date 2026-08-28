@@ -61,36 +61,35 @@ class RawDataFeed(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     source_type = Column(String(50), nullable=False, comment='数据源类型')
-    content = Column(Text, nullable=False, charset='utf8mb4', comment='原始内容')
+    content = Column(Text, nullable=False, comment='原始内容')
     url = Column(String(1024), comment='内容链接')
     source_id = Column(String(100), nullable=False, comment='来源ID')
     source_name = Column(String(200), comment='来源名称')
+    related_tickers = Column(JSONType, comment='关联股票代码列表(JSON数组)')
     additional_data = Column(JSONType, comment='额外数据(JSON格式)')
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment='创建时间')
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
 
-    # 关系：一条原始数据可能对应多条情感分析记录
     sentiment_records = relationship('FinancialSentiment', back_populates='raw_data', cascade='all, delete-orphan')
 
-    # 索引
     __table_args__ = (
         Index('idx_source_type_created', 'source_type', 'created_at'),
         Index('idx_source_id_created', 'source_id', 'created_at'),
-        {'charset': 'utf8mb4', 'collate': 'utf8mb4_unicode_ci'},
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'},
     )
 
     def __repr__(self):
         return f"<RawDataFeed(id={self.id}, source_type={self.source_type}, source_id={self.source_id})>"
 
     def to_dict(self):
-        """转换为字典"""
         return {
             'id': self.id,
             'source_type': self.source_type,
             'content': self.content,
             'url': self.url,
             'source_id': self.source_id,
-            'source_name': self.source_name,
+                        'source_name': self.source_name,
+            'related_tickers': self.related_tickers,
             'additional_data': self.additional_data,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
@@ -125,29 +124,26 @@ class FinancialSentiment(Base):
         nullable=False,
         comment='告警级别'
     )
-    summary_event = Column(Text, charset='utf8mb4', comment='事件摘要')
+    summary_event = Column(Text, comment='事件摘要')
     raw_data_id = Column(Integer, ForeignKey('raw_data_feed.id', ondelete='SET NULL'), comment='原始数据ID')
     analysis_metadata = Column(JSONType, comment='分析元数据(JSON格式)')
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment='创建时间')
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
 
-    # 关系：多条情感分析记录指向一条原始数据
     raw_data = relationship('RawDataFeed', back_populates='sentiment_records')
 
-    # 索引
     __table_args__ = (
         Index('idx_stock_code_created', 'stock_code', 'created_at'),
         Index('idx_alert_level_created', 'alert_level', 'created_at'),
         Index('idx_raw_data_id', 'raw_data_id'),
         Index('idx_sentiment_score', 'sentiment_score'),
-        {'charset': 'utf8mb4', 'collate': 'utf8mb4_unicode_ci'},
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'},
     )
 
     def __repr__(self):
         return f"<FinancialSentiment(id={self.id}, stock_code={self.stock_code}, sentiment_score={self.sentiment_score})>"
 
     def to_dict(self):
-        """转换为字典"""
         return {
             'id': self.id,
             'stock_name': self.stock_name,

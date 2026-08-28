@@ -2,7 +2,7 @@
 name = "trendradar"
 version = "6.10.0"
 description = "TrendRadar - 热点新闻聚合与分析工具"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
     "requests==2.33.0",
     "pytz==2026.1",
@@ -14,16 +14,20 @@ dependencies = [
     "litellm==1.82.6",
     "json-repair==0.58.6",
     "tenacity==8.5.0",
-    "SQLAlchemy==2.1.1",
+    "SQLAlchemy==2.0.52",
     "PyMySQL==1.1.1",
+    "selenium==4.23.0",
 ]
+
 
 [project.scripts]
 trendradar = "trendradar.__main__:main"
 trendradar-mcp = "mcp_server.server:run_server"
 
 [dependency-groups]
-dev = []
+dev = [
+    "pytest>=8.0.0",
+]
 
 [build-system]
 requires = ["hatchling"]
