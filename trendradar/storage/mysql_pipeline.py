@@ -269,6 +269,63 @@ class MySQLDataPipeline:
             logger.error(f"[MySQL管道] 存储单条分析结果失败: {e}", exc_info=True)
             return False
 
+    def process_ai_analysis_snapshot(
+        self,
+        sections: Dict[str, str],
+        ai_mode: str = "",
+        stats: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """
+        将文本型 AI 分析结果（5 板块结构）作为一条"市场分析快照"存入
+        financial_sentiment 表。
+
+        适用场景：当前 AI 提示词输出为文本板块（core_trends /
+        sentiment_controversy / signals / rss_insights / outlook_strategy），
+        无结构化实体列表，无法逐实体生成情感记录；故将整份分析保存为
+        一条记录，板块全文保留在 analysis_metadata JSON 中以便追溯。
+
+        Args:
+            sections: 板块文本字典（如 {'core_trends': '...', ...}）
+            ai_mode: AI 分析模式（daily / current / incremental）
+            stats: 分析统计信息（新闻数、分析数等，可选）
+
+        Returns:
+            成功存储的条数（0 或 1）
+        """
+        try:
+            sections = {k: (v or "") for k, v in (sections or {}).items()}
+            if not any(sections.values()):
+                logger.warning("[MySQL管道] AI 分析板块内容为空，跳过快照存储")
+                return 0
+
+            # 摘要优先取核心态势板块，缺失时取第一个非空板块，截断防御
+            summary_source = sections.get('core_trends') or next(
+                (v for v in sections.values() if v), ''
+            )
+            record = {
+                'stock_name': 'AI市场分析',
+                'stock_code': '',
+                'sentiment_score': 0.0,   # 文本型结果无数值评分，中性占位
+                'alert_level': 'Low',
+                'summary_event': summary_source[:500],
+                'raw_data_id': None,
+                'analysis_metadata': {
+                    'record_type': 'ai_analysis_snapshot',
+                    'ai_mode': ai_mode,
+                    'sections': sections,
+                    'stats': stats or {},
+                },
+            }
+            count = self.backend.save_financial_sentiment_batch([record])
+            logger.info(
+                f"[MySQL管道] AI 分析快照已存储: ai_mode={ai_mode}, count={count}"
+            )
+            return count
+
+        except Exception as e:
+            logger.error(f"[MySQL管道] 存储AI分析快照失败: {e}", exc_info=True)
+            return 0
+
     # ========================================
     # 数据查询接口
     # ========================================

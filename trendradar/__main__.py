@@ -415,6 +415,9 @@ class NewsAnalyzer:
                 else:
                     print("[AI] 分析完成")
 
+                # 保存到 MySQL（如果启用）：存储 5 板块分析快照
+                self._save_ai_result_to_mysql(result)
+
                 # 记录 AI 分析
                 if schedule.once_analyze and schedule.period_key:
                     scheduler = self.ctx.create_scheduler()
@@ -1024,8 +1027,85 @@ class NewsAnalyzer:
         except Exception as e:
             print(f"[MySQL] 保存热榜数据失败: {e}")
 
+    def _save_rss_to_mysql(self, rss_data) -> None:
+        """将 RSS 抓取数据保存到 MySQL（如果启用）"""
+        try:
+            pipeline = self.ctx.get_mysql_pipeline()
+            if pipeline is None:
+                return
 
+            # rss_data.items 按 feed_id 分组，转换为管道需要的字典格式
+            total_count = 0
+            for feed_id, feed_items in rss_data.items.items():
+                feed_name = rss_data.id_to_name.get(feed_id, feed_id)
+                items = []
+                for item in feed_items:
+                    items.append({
+                        'title': item.title,
+                        'url': item.url,
+                        'summary': item.summary,
+                        'author': item.author,
+                        'published_at': item.published_at,
+                        'guid': item.guid,
+                    })
 
+                if items:
+                    count = pipeline.ingest_rss_feed(
+                        items,
+                        feed_id=feed_id,
+                        feed_name=feed_name,
+                    )
+                    total_count += count
+
+            if total_count > 0:
+                print(f"[MySQL] RSS 数据已存储: {total_count} 条")
+        except Exception as e:
+            print(f"[MySQL] 保存 RSS 数据失败: {e}")
+
+    def _save_ai_result_to_mysql(self, result: AIAnalysisResult) -> None:
+        """将 AI 分析结果保存到 MySQL（如果启用）
+
+        当前 AI 输出为 5 板块文本结构（无结构化实体），因此以
+        "市场分析快照" 形式存储为一条 financial_sentiment 记录，
+        完整板块文本保留在 analysis_metadata JSON 中。
+        """
+        try:
+            pipeline = self.ctx.get_mysql_pipeline()
+            if pipeline is None:
+                return
+
+            sections = {
+                'core_trends': result.core_trends,
+                'sentiment_controversy': result.sentiment_controversy,
+                'signals': result.signals,
+                'rss_insights': result.rss_insights,
+                'outlook_strategy': result.outlook_strategy,
+            }
+            if result.standalone_summaries:
+                sections['standalone_summaries'] = dict(result.standalone_summaries)
+
+            stats = {
+                'total_news': result.total_news,
+                'analyzed_news': result.analyzed_news,
+                'max_news_limit': result.max_news_limit,
+                'hotlist_count': result.hotlist_count,
+                'rss_count': result.rss_count,
+                'hotlist_analyzed': result.hotlist_analyzed,
+                'rss_analyzed': result.rss_analyzed,
+                'standalone_analyzed': result.standalone_analyzed,
+                'include_rss': result.include_rss,
+                'include_standalone': result.include_standalone,
+            }
+
+            count = pipeline.process_ai_analysis_snapshot(
+                sections=sections,
+                ai_mode=result.ai_mode,
+                stats=stats,
+            )
+            if count > 0:
+                print("[MySQL] AI 分析结果已存储")
+        except Exception as e:
+            print(f"[MySQL] 保存 AI 分析结果失败: {e}")
 
     def _crawl_rss_data(self) -> Tuple[Optional[List[Dict]], Optional[List[Dict]], Optional[List[Dict]], set]:
         """
@@ -1114,6 +1194,9 @@ class NewsAnalyzer:
             # 保存到存储后端
             if self.storage_manager.save_rss_data(rss_data):
                 print(f"[RSS] 数据已保存到存储后端")
+
+                # 保存到 MySQL（如果启用）
+                self._save_rss_to_mysql(rss_data)
 
                 # 处理 RSS 数据（按模式过滤）并返回用于合并推送
                 return self._process_rss_data_by_mode(rss_data)
