@@ -26,6 +26,9 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+# ORM 模型：导入 Base 即注册全部模型表，供 create_tables 使用
+from trendradar.storage.mysql_models import Base  # noqa: E402
+
 
 # 配置日志
 logging.basicConfig(
@@ -224,7 +227,7 @@ class MySQLDatabaseInitializer:
             inspector = inspect(self.engine)
             tables = set(inspector.get_table_names())
             required = {
-                'raw_data_feed': ['id', 'source_type', 'content', 'url', 'source_id', 'source_name', 'additional_data', 'created_at', 'updated_at'],
+                'raw_data_feed': ['id', 'source_type', 'content', 'url', 'source_id', 'source_name', 'related_tickers', 'additional_data', 'created_at', 'updated_at'],
                 'financial_sentiment': ['id', 'stock_name', 'stock_code', 'sentiment_score', 'alert_level', 'summary_event', 'raw_data_id', 'analysis_metadata', 'created_at', 'updated_at'],
             }
 
