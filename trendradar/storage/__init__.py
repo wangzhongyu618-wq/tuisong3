@@ -28,6 +28,34 @@ except ImportError:
     RemoteStorageBackend = None
     HAS_REMOTE = False
 
+# MySQL 后端和相关工具
+try:
+    from trendradar.storage.mysql_models import (
+        Base,
+        RawDataFeed,
+        FinancialSentiment,
+        AlertLevel,
+    )
+    from trendradar.storage.mysql_pool import (
+        MySQLDatabasePool,
+        init_db_pool,
+        get_db_pool,
+        close_db_pool,
+    )
+    from trendradar.storage.mysql_backend import MySQLStorageBackend
+    HAS_MYSQL = True
+except ImportError:
+    Base = None
+    RawDataFeed = None
+    FinancialSentiment = None
+    AlertLevel = None
+    MySQLDatabasePool = None
+    init_db_pool = None
+    get_db_pool = None
+    close_db_pool = None
+    MySQLStorageBackend = None
+    HAS_MYSQL = False
+
 __all__ = [
     # 基础类
     "StorageBackend",
@@ -43,7 +71,18 @@ __all__ = [
     "LocalStorageBackend",
     "RemoteStorageBackend",
     "HAS_REMOTE",
+    "MySQLStorageBackend",
+    "HAS_MYSQL",
     # 管理器
     "StorageManager",
     "get_storage_manager",
+    # MySQL 相关
+    "Base",
+    "RawDataFeed",
+    "FinancialSentiment",
+    "AlertLevel",
+    "MySQLDatabasePool",
+    "init_db_pool",
+    "get_db_pool",
+    "close_db_pool",
 ]
