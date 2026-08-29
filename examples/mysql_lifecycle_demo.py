@@ -18,17 +18,12 @@
 import atexit
 from datetime import datetime, timedelta
 
+from trendradar.storage.mysql_env import conn_params_from_env
 from trendradar.storage.mysql_pipeline import init_mysql_pipeline
 from trendradar.storage.mysql_pool import close_db_pool, get_db_pool
 
-MYSQL_CONN = {
-    "host": "localhost",
-    "port": 3306,
-    "username": "root",
-    "password": "12345678",
-    "database": "trendradar",
-    "charset": "utf8mb4",
-}
+# 连接参数：MYSQL_* 环境变量优先（见 trendradar/storage/mysql_env.py）
+MYSQL_CONN = conn_params_from_env()
 RETENTION_DAYS = 30  # 保留期：30 天前的记录视为过期
 
 

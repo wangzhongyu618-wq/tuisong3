@@ -31,14 +31,11 @@ def example_1_basic_setup():
     logger.info("=" * 60)
 
     from trendradar.storage import init_db_pool, MySQLStorageBackend
+    from trendradar.storage.mysql_env import conn_params_from_env
 
-    # 初始化连接池
+    # 初始化连接池（MYSQL_* 环境变量优先）
     db_pool = init_db_pool(
-        host="localhost",
-        port=3306,
-        username="root",
-        password="12345678",
-        database="trendradar",
+        **conn_params_from_env(),
         pool_size=10,
         max_overflow=20,
     )
@@ -252,16 +249,11 @@ def example_6_using_pipeline(backend=None):
     logger.info("示例 6: MySQL 数据管道")
     logger.info("=" * 60)
 
+    from trendradar.storage.mysql_env import conn_params_from_env
     from trendradar.storage.mysql_pipeline import init_mysql_pipeline
 
-    # 初始化管道
-    pipeline = init_mysql_pipeline(
-        host="localhost",
-        port=3306,
-        username="root",
-        password="12345678",
-        database="trendradar"
-    )
+    # 初始化管道（MYSQL_* 环境变量优先）
+    pipeline = init_mysql_pipeline(**conn_params_from_env())
 
     # 使用管道处理爬虫数据
     logger.info("\n[管道] 处理爬虫数据...")

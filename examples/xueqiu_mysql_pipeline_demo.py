@@ -17,19 +17,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from trendradar.crawler import XueqiuSeleniumFetcher
+from trendradar.storage.mysql_env import conn_params_from_env
 from trendradar.storage.mysql_pipeline import init_mysql_pipeline
 
 
 def main():
-    # 1) 初始化 MySQL 管道
-    pipeline = init_mysql_pipeline(
-        host="localhost",
-        port=3306,
-        username="root",
-        password="12345678",
-        database="trendradar",
-        charset="utf8mb4",
-    )
+    # 1) 初始化 MySQL 管道（MYSQL_* 环境变量优先）
+    pipeline = init_mysql_pipeline(**conn_params_from_env())
 
     # 2) 创建抓取器
     fetcher = XueqiuSeleniumFetcher(

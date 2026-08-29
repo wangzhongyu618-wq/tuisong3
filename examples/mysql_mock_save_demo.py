@@ -32,15 +32,10 @@ from trendradar.storage import (
 )
 from trendradar.storage.base import NewsData, NewsItem
 
-# MySQL 连接参数（如需修改请调整此处）
-MYSQL_CONN = {
-    "host": "localhost",
-    "port": 3306,
-    "username": "root",
-    "password": "12345678",
-    "database": "trendradar",
-    "charset": "utf8mb4",
-}
+from trendradar.storage.mysql_env import conn_params_from_env
+
+# MySQL 连接参数：MYSQL_* 环境变量优先（见 trendradar/storage/mysql_env.py）
+MYSQL_CONN = conn_params_from_env()
 
 
 def build_mock_news_data() -> NewsData:

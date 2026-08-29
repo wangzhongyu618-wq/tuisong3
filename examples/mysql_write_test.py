@@ -15,8 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import create_engine, text
 
-DB_URL = "mysql+pymysql://root:12345678@localhost:3306?charset=utf8mb4"
-TARGET_DB = "trendradar"
+from trendradar.storage.mysql_env import conn_params_from_env
+
+_CONN = conn_params_from_env()  # MYSQL_* 环境变量优先（见 trendradar/storage/mysql_env.py）
+DB_URL = (
+    f"mysql+pymysql://{_CONN['username']}:{_CONN['password']}"
+    f"@{_CONN['host']}:{_CONN['port']}?charset={_CONN['charset']}"
+)
+TARGET_DB = _CONN["database"]
 
 
 def ensure_database():
@@ -38,7 +44,7 @@ def ensure_database():
 
 
 def ensure_tables():
-    engine = create_engine(f"mysql+pymysql://root:12345678@localhost:3306/{TARGET_DB}?charset=utf8mb4", future=True)
+    engine = create_engine(f"{DB_URL}/{TARGET_DB}", future=True)
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -82,7 +88,7 @@ def ensure_tables():
 
 
 def write_demo_records():
-    engine = create_engine(f"mysql+pymysql://root:12345678@localhost:3306/{TARGET_DB}?charset=utf8mb4", future=True)
+    engine = create_engine(f"{DB_URL}/{TARGET_DB}", future=True)
     with engine.begin() as conn:
         insert_raw = text(
             "INSERT INTO raw_data_feed (source_type, content, url) VALUES (:source_type, :content, :url)"
