@@ -56,6 +56,10 @@ class MySQLReader:
     # 自描述：让大模型理解库结构
     # ----------------------------------------------------------------
 
+    def health_check(self) -> bool:
+        """数据库健康检查（只读）；供调用方在初始化后确认连接可用。"""
+        return self._backend.health_check()
+
     def describe_schema(self) -> Dict[str, Any]:
         """返回两张表的字段与查询维度说明，供大模型理解可查内容。
 

@@ -19,6 +19,7 @@ from .tools.system import SystemManagementTools
 from .tools.storage_sync import StorageSyncTools
 from .tools.article_reader import ArticleReaderTools
 from .tools.notification import NotificationTools
+from .tools.mysql_reader import MySQLReaderTools
 from .utils.date_parser import DateParser
 from .utils.errors import MCPError
 
@@ -41,6 +42,7 @@ def _get_tools(project_root: Optional[str] = None):
         _tools_instances['storage'] = StorageSyncTools(project_root)
         _tools_instances['article'] = ArticleReaderTools(project_root)
         _tools_instances['notification'] = NotificationTools(project_root)
+        _tools_instances['mysql_reader'] = MySQLReaderTools(project_root)
     return _tools_instances
 
 
@@ -922,6 +924,189 @@ async def list_available_dates(
     """
     tools = _get_tools()
     result = await asyncio.to_thread(tools['storage'].list_available_dates, source=source)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+# ==================== MySQL 只读查询工具（MySQLReader） ====================
+
+@mcp.tool
+async def mysql_describe_schema() -> str:
+    """
+    【MySQL 查询起点】获取 MySQL 库中数据表的字段与可查询维度说明
+
+    描述 raw_data_feed（原始抓取数据）与 financial_sentiment（情感分析结果）
+    两张表的字段含义和支持的查询维度，供规划后续 MySQL 查询时参考。
+
+    **何时使用：**
+    - 需要查询 MySQL 持久化库（而非本地 SQLite 文件）中的数据时
+    - 不确定 mysql_* 系列工具支持哪些筛选维度时，先调用本工具
+
+    Returns:
+        JSON格式的表结构说明，包含字段注释、查询维度与各表行数统计
+    """
+    tools = _get_tools()
+    result = await asyncio.to_thread(tools['mysql_reader'].describe_schema)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool
+async def mysql_search_raw_data(
+    source_type: Optional[str] = None,
+    source_id: Optional[str] = None,
+    keyword: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 20,
+) -> str:
+    """
+    按条件检索 MySQL 库中的原始新闻数据（raw_data_feed 表，只读）
+
+    Args:
+        source_type: 数据源类型，如 "hotlist_news"（热榜）、"rss_feed"（RSS订阅）
+        source_id: 来源ID，如 "cls-hot"（财联社热榜）、"wallstreetcn-hot"
+        keyword: 内容关键词（对 content 模糊匹配）
+        start_date: 创建时间下限，ISO格式，如 "2026-08-01" 或 "2026-08-01T00:00:00"
+        end_date: 创建时间上限，ISO格式
+        limit: 返回条数上限，默认20，最大200
+
+    Returns:
+        JSON格式的数据列表，含 content/url/source_name/additional_data 等
+
+    Examples:
+        - mysql_search_raw_data(source_type="rss_feed", limit=10)
+        - mysql_search_raw_data(keyword="英伟达", start_date="2026-08-01")
+    """
+    tools = _get_tools()
+    result = await asyncio.to_thread(
+        tools['mysql_reader'].search_raw_data,
+        source_type=source_type, source_id=source_id, keyword=keyword,
+        start_date=start_date, end_date=end_date, limit=limit,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool
+async def mysql_recent_news(
+    source_type: Optional[str] = None,
+    limit: int = 10,
+) -> str:
+    """
+    获取 MySQL 库中最近抓取的新闻（raw_data_feed 表，按创建时间倒序，只读）
+
+    Args:
+        source_type: 可选数据源类型过滤，如 "hotlist_news" / "rss_feed"；
+                     不指定则返回所有来源的最新数据
+        limit: 返回条数，默认10，最大200
+
+    Returns:
+        JSON格式的最新数据列表
+
+    Examples:
+        - mysql_recent_news()
+        - mysql_recent_news(source_type="rss_feed", limit=5)
+    """
+    tools = _get_tools()
+    result = await asyncio.to_thread(
+        tools['mysql_reader'].recent_news,
+        source_type=source_type, limit=limit,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool
+async def mysql_search_sentiments(
+    stock_code: Optional[str] = None,
+    stock_name: Optional[str] = None,
+    alert_level: Optional[str] = None,
+    min_sentiment: Optional[float] = None,
+    max_sentiment: Optional[float] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 20,
+) -> str:
+    """
+    按条件检索 MySQL 库中的情感分析结果（financial_sentiment 表，只读）
+
+    Args:
+        stock_code: 股票代码，如 "NVDA"
+        stock_name: 股票名称模糊匹配，如 "英伟达"
+        alert_level: 告警级别，可选 "Low" / "Medium" / "High"
+        min_sentiment: 情感评分下限，范围 [-1, 1]
+        max_sentiment: 情感评分上限，范围 [-1, 1]
+        start_date: 创建时间下限，ISO格式
+        end_date: 创建时间上限，ISO格式
+        limit: 返回条数上限，默认20，最大200
+
+    Returns:
+        JSON格式的分析结果列表，含 sentiment_score/alert_level/summary_event/
+        analysis_metadata（JSON 字符串，可解析后查看完整分析内容）
+
+    Examples:
+        - mysql_search_sentiments(stock_code="NVDA", limit=5)
+        - mysql_search_sentiments(alert_level="High")
+        - mysql_search_sentiments(min_sentiment=0.5, start_date="2026-08-01")
+    """
+    tools = _get_tools()
+    result = await asyncio.to_thread(
+        tools['mysql_reader'].search_sentiments,
+        stock_code=stock_code, stock_name=stock_name, alert_level=alert_level,
+        min_sentiment=min_sentiment, max_sentiment=max_sentiment,
+        start_date=start_date, end_date=end_date, limit=limit,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool
+async def mysql_top_stocks(
+    limit: int = 5,
+    horizon_days: int = 7,
+) -> str:
+    """
+    统计 MySQL 库中近 N 天情感评分最正面的股票 TOP（financial_sentiment 聚合，只读）
+
+    Args:
+        limit: 返回 TOP N，默认5，最大200
+        horizon_days: 统计时间窗口（天），默认7，最大365
+
+    Returns:
+        JSON格式的聚合列表，含 stock_code/stock_name/avg_score/count
+
+    Examples:
+        - mysql_top_stocks()
+        - mysql_top_stocks(limit=3, horizon_days=30)
+    """
+    tools = _get_tools()
+    result = await asyncio.to_thread(
+        tools['mysql_reader'].top_stocks,
+        limit=limit, horizon_days=horizon_days,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool
+async def mysql_get_sentiment_by_id(
+    sentiment_id: int,
+) -> str:
+    """
+    按 ID 获取 MySQL 库中单条情感分析的完整详情（financial_sentiment 表，只读）
+
+    适用于先通过 mysql_search_sentiments 拿到记录 ID，再查看单条完整内容
+    （含完整 analysis_metadata JSON）的场景。
+
+    Args:
+        sentiment_id: 情感分析记录的自增主键 ID
+
+    Returns:
+        JSON格式的单条记录详情；记录不存在时返回 found=false
+
+    Examples:
+        - mysql_get_sentiment_by_id(sentiment_id=1)
+    """
+    tools = _get_tools()
+    result = await asyncio.to_thread(
+        tools['mysql_reader'].get_sentiment_by_id,
+        sentiment_id,
+    )
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
