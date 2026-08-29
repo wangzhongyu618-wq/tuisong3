@@ -85,10 +85,13 @@ class XueqiuSeleniumFetcher:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
 
-        try:
-            return webdriver.Chrome(options=options, executable_path=self.executable_path)
-        except Exception:
-            return webdriver.Chrome(options=options)
+        if self.executable_path:
+            # selenium 4.10+ 已移除 executable_path 参数，改用 Service 指定驱动路径
+            from selenium.webdriver.chrome.service import Service
+
+            return webdriver.Chrome(options=options, service=Service(self.executable_path))
+        # 未指定驱动路径时交给 selenium manager 自动匹配
+        return webdriver.Chrome(options=options)
 
     def _extract_source_identity(self, target_url: str) -> Dict[str, str]:
         parsed = urlparse(target_url)
