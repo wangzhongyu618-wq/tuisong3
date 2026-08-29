@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from sqlalchemy import text
 
 from trendradar.storage.mysql_models import (
@@ -140,6 +140,8 @@ class MySQLStorageBackend:
             成功插入的记录数
         """
         saved = 0
+        skipped_dup = 0
+        seen_keys = set()
         with self.db_pool.session_scope() as session:
             for idx, record in enumerate(records, start=1):
                 try:
@@ -169,6 +171,14 @@ class MySQLStorageBackend:
                         )
                         continue
 
+                    # 批内去重：同 (source_type, source_id, content) 只入库一次
+                    dedup_key = (source_type or 'hotlist_news', source_id, content)
+                    if dedup_key in seen_keys:
+                        skipped_dup += 1
+                        logger.debug(f"[MySQL存储] 第 {idx} 条与批内前文重复，已跳过")
+                        continue
+                    seen_keys.add(dedup_key)
+
                     row = RawDataFeed(
                         source_type=source_type or 'hotlist_news',
                         content=content,
@@ -183,9 +193,15 @@ class MySQLStorageBackend:
                     saved += 1
                 except SQLAlchemyError as e:
                     session.rollback()
-                    logger.warning(
-                        f"[MySQL存储] 第 {idx} 条原始数据入库失败，已跳过: {e}"
-                    )
+                    if self._is_duplicate_key_error(e):
+                        skipped_dup += 1
+                        logger.info(
+                            f"[MySQL存储] 第 {idx} 条重复数据（同来源同标题已存在），已跳过"
+                        )
+                    else:
+                        logger.warning(
+                            f"[MySQL存储] 第 {idx} 条原始数据入库失败，已跳过: {e}"
+                        )
                 except (TypeError, ValueError, OverflowError) as e:
                     session.rollback()
                     logger.warning(
@@ -198,8 +214,29 @@ class MySQLStorageBackend:
                         exc_info=True,
                     )
 
-        logger.info(f"[MySQL存储] 批量保存原始数据: 成功 {saved}/{len(records)} 条")
+        if skipped_dup:
+            logger.info(
+                f"[MySQL存储] 批量保存原始数据: 成功 {saved}/{len(records)} 条，"
+                f"重复跳过 {skipped_dup} 条"
+            )
+        else:
+            logger.info(f"[MySQL存储] 批量保存原始数据: 成功 {saved}/{len(records)} 条")
         return saved
+
+    @staticmethod
+    def _is_duplicate_key_error(exc: SQLAlchemyError) -> bool:
+        """判断 SQLAlchemy 异常是否为 MySQL 1062 重复键错误。"""
+        if not isinstance(exc, IntegrityError):
+            return False
+        orig = getattr(exc, "orig", None)
+        if orig is not None:
+            try:
+                if orig.args and orig.args[0] == 1062:
+                    return True
+            except Exception:
+                pass
+            return "Duplicate entry" in str(orig)
+        return False
 
     def get_raw_data(self, data_id: int) -> Optional[Dict[str, Any]]:
         """

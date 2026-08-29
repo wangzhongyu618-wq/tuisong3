@@ -211,6 +211,10 @@ class MySQLDatabaseInitializer:
                 "ADD COLUMN `related_tickers` TEXT NULL COMMENT '关联股票代码列表(JSON数组)' AFTER `source_name`",
                 '关联股票代码列表'
             ),
+            'content_hash': (
+                "ADD COLUMN `content_hash` VARCHAR(64) NULL COMMENT '内容哈希(sha256)，用于同来源内去重' AFTER `additional_data`",
+                '内容哈希去重列'
+            ),
         },
     }
 
@@ -230,7 +234,7 @@ class MySQLDatabaseInitializer:
             inspector = inspect(self.engine)
             tables = set(inspector.get_table_names())
             required = {
-                'raw_data_feed': ['id', 'source_type', 'content', 'url', 'source_id', 'source_name', 'related_tickers', 'additional_data', 'created_at', 'updated_at'],
+                'raw_data_feed': ['id', 'source_type', 'content', 'url', 'source_id', 'source_name', 'related_tickers', 'additional_data', 'content_hash', 'created_at', 'updated_at'],
                 'financial_sentiment': ['id', 'stock_name', 'stock_code', 'sentiment_score', 'alert_level', 'summary_event', 'raw_data_id', 'analysis_metadata', 'created_at', 'updated_at'],
             }
 
@@ -370,6 +374,89 @@ class MySQLDatabaseInitializer:
             logger.error(f"[初始化] 补建索引失败: {e}", exc_info=True)
             return False
 
+    def _ensure_dedup(self) -> bool:
+        """
+        幂等启用 raw_data_feed 的内容去重：
+
+        1. 回填 content_hash（MySQL SHA2(content,256) 与 Python sha256 对 utf8 文本结果一致）；
+        2. 唯一键缺失时先清理 (source_type, source_id, content_hash) 重复旧行（保留最早 id；
+           financial_sentiment.raw_data_id 为 ondelete=SET NULL，不会级联删除分析记录）；
+        3. 收紧 content_hash 为 NOT NULL 并建立唯一键 uq_raw_dedup。
+
+        新库由 ORM UniqueConstraint 建表时直接携带，此方法按状态逐项检查、重复执行零副作用。
+        """
+        if not self.engine:
+            logger.error("[初始化] 引擎未初始化，无法启用去重")
+            return False
+
+        try:
+            inspector = inspect(self.engine)
+            if 'raw_data_feed' not in inspector.get_table_names():
+                logger.warning("[初始化] 表 raw_data_feed 不存在，跳过去重启用")
+                return True
+
+            columns = [c['name'] for c in inspector.get_columns('raw_data_feed')]
+            if 'content_hash' not in columns:
+                logger.warning(
+                    "[初始化] 表 raw_data_feed 缺少 content_hash 列（应由修正表结构步骤迁移），跳过去重启用"
+                )
+                return True
+
+            has_unique = any(
+                idx.get('name') == 'uq_raw_dedup' and idx.get('unique')
+                for idx in inspector.get_indexes('raw_data_feed')
+            )
+
+            with self.engine.begin() as conn:
+                # 1) 回填哈希（无匹配行时 rowcount=0，幂等）
+                result = conn.execute(text(
+                    "UPDATE `raw_data_feed` SET `content_hash` = SHA2(`content`, 256) "
+                    "WHERE `content_hash` IS NULL OR `content_hash` = ''"
+                ))
+                if result.rowcount:
+                    logger.info(f"[初始化] 已回填 content_hash: {result.rowcount} 行")
+
+                if not has_unique:
+                    # 2) 先清理存量重复，否则 ADD UNIQUE KEY 会失败
+                    result = conn.execute(text(
+                        "DELETE r1 FROM `raw_data_feed` r1 "
+                        "JOIN `raw_data_feed` r2 "
+                        "ON r1.`source_type` = r2.`source_type` "
+                        "AND r1.`source_id` = r2.`source_id` "
+                        "AND r1.`content_hash` = r2.`content_hash` "
+                        "AND r1.`id` > r2.`id`"
+                    ))
+                    if result.rowcount:
+                        logger.info(
+                            f"[初始化] 已清理重复原始数据: {result.rowcount} 行（每组保留最早记录）"
+                        )
+
+                    # 3) 收紧 NOT NULL（仅首次启用时执行）
+                    conn.execute(text(
+                        "ALTER TABLE `raw_data_feed` "
+                        "MODIFY COLUMN `content_hash` VARCHAR(64) NOT NULL "
+                        "COMMENT '内容哈希(sha256)，用于同来源内去重'"
+                    ))
+
+                    # 4) 建唯一键
+                    try:
+                        conn.execute(text(
+                            "ALTER TABLE `raw_data_feed` "
+                            "ADD UNIQUE KEY `uq_raw_dedup` (`source_type`, `source_id`, `content_hash`)"
+                        ))
+                        logger.info(
+                            "[初始化] 唯一键 uq_raw_dedup 创建成功（同来源同标题只保留一条）"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[初始化] 唯一键 uq_raw_dedup 创建失败: {e}")
+                        return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"[初始化] 启用去重失败: {e}", exc_info=True)
+            return False
+
     def verify_tables(self) -> bool:
         """验证表结构"""
         if not self.engine:
@@ -428,6 +515,7 @@ class MySQLDatabaseInitializer:
             ("创建应用程序引擎", self._create_application_engine),
             ("修正表结构", self.reconcile_schema),
             ("创建数据表", self.create_tables),
+            ("启用内容去重", self._ensure_dedup),
             ("补建查询索引", self._ensure_indexes),
             ("验证表结构", self.verify_tables),
         ]

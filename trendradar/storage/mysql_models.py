@@ -9,10 +9,11 @@ MySQL 数据库模型定义（SQLAlchemy ORM）
 
 from datetime import datetime
 from enum import Enum as PyEnum
-from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey, Enum, DECIMAL, Index
+from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey, Enum, DECIMAL, Index, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 from sqlalchemy.types import TypeDecorator
+import hashlib
 import json
 
 # 创建 Base 类
@@ -54,6 +55,7 @@ class RawDataFeed(Base):
     - source_id: 来源 ID（如 "toutiao", "baidu" 等）
     - source_name: 来源名称
     - additional_data: 额外数据（JSON格式）
+     - content_hash: 内容哈希（sha256 hex），(source_type, source_id, content_hash) 唯一，防止重复入库
     - created_at: 记录创建时间（UTC）
     - updated_at: 记录更新时间（UTC）
     """
@@ -67,16 +69,26 @@ class RawDataFeed(Base):
     source_name = Column(String(200), comment='来源名称')
     related_tickers = Column(JSONType, comment='关联股票代码列表(JSON数组)')
     additional_data = Column(JSONType, comment='额外数据(JSON格式)')
+    content_hash = Column(String(64), nullable=False, comment='内容哈希(sha256)，用于同来源内去重')
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment='创建时间')
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment='更新时间')
 
     sentiment_records = relationship('FinancialSentiment', back_populates='raw_data', cascade='all, delete-orphan')
+
+    @validates('content')
+    def _hash_content(self, key, value):
+        """content 赋值时自动计算 sha256 哈希，供 (source_type, source_id, content_hash) 唯一键去重。"""
+        cleaned = value if isinstance(value, str) else ("" if value is None else str(value))
+        self.content_hash = hashlib.sha256(cleaned.encode("utf-8", errors="replace")).hexdigest()
+        return value
 
     __table_args__ = (
         Index('idx_source_type_created', 'source_type', 'created_at'),
         Index('idx_source_id_created', 'source_id', 'created_at'),
         # 支撑无 source_type 过滤、仅按时间范围过滤/倒序排序的查询（如 MCP mysql_recent_news）
         Index('idx_created_at', 'created_at'),
+        # 内容去重：同一来源下相同标题只保留一条（跨来源允许重复）
+        UniqueConstraint('source_type', 'source_id', 'content_hash', name='uq_raw_dedup'),
         {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'},
     )
 
@@ -93,6 +105,7 @@ class RawDataFeed(Base):
                         'source_name': self.source_name,
             'related_tickers': self.related_tickers,
             'additional_data': self.additional_data,
+            'content_hash': self.content_hash,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
