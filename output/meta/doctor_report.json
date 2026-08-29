@@ -1,0 +1,63 @@
+{
+  "version": "6.10.0",
+  "generated_at": "2026-08-28T05:54:54.912592+00:00",
+  "config_path": "config/config.yaml",
+  "summary": {
+    "pass": 9,
+    "warn": 1,
+    "fail": 0,
+    "ok": true
+  },
+  "checks": [
+    {
+      "status": "pass",
+      "item": "Python版本",
+      "detail": "3.10.9 (满足 >= 3.10)"
+    },
+    {
+      "status": "pass",
+      "item": "主配置文件",
+      "detail": "已找到: config/config.yaml"
+    },
+    {
+      "status": "pass",
+      "item": "关键词文件",
+      "detail": "已找到: config/frequency_words.txt"
+    },
+    {
+      "status": "pass",
+      "item": "调度文件",
+      "detail": "已找到: config/timeline.yaml"
+    },
+    {
+      "status": "pass",
+      "item": "配置加载",
+      "detail": "加载成功: config/config.yaml"
+    },
+    {
+      "status": "pass",
+      "item": "调度配置",
+      "detail": "调度解析成功（report_mode=incremental, ai_mode=follow_report）"
+    },
+    {
+      "status": "pass",
+      "item": "AI配置",
+      "detail": "模型: openai/glm-4.7-flash"
+    },
+    {
+      "status": "pass",
+      "item": "存储配置",
+      "detail": "当前后端: local"
+    },
+    {
+      "status": "warn",
+      "item": "通知配置",
+      "detail": "未配置任何通知渠道"
+    },
+    {
+      "status": "pass",
+      "item": "输出目录",
+      "detail": "可写: output"
+    }
+  ]
+}

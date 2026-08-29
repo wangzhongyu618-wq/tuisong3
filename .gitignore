@@ -1,0 +1,21 @@
+# ===== Python 构建产物 =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ===== 测试 / 工具缓存 =====
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+
+# ===== IDE / 系统 =====
+.idea/
+.Thumbs.db
+.DS_Store
