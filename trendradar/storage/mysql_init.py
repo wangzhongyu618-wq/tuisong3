@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 class MySQLDatabaseInitializer:
     """MySQL 数据库初始化器"""
 
+    # 需要按 ORM 定义补建二级索引的表（索引事实源 = mysql_models.py 的 __table_args__）
+    INDEXED_TABLES = ('raw_data_feed', 'financial_sentiment')
+
     def __init__(
         self,
         host: str = "localhost",
@@ -304,6 +307,69 @@ class MySQLDatabaseInitializer:
             logger.error(f"[初始化] 修复表结构失败: {e}", exc_info=True)
             return False
 
+    def _ensure_indexes(self) -> bool:
+        """
+        幂等补建 ORM 模型中定义的二级查询索引。
+
+        背景：Base.metadata.create_all 只在创建新表时建立索引，
+        对已存在的旧表不会补建。此方法以 mysql_models.py 的
+        __table_args__ 为唯一事实源，对旧库逐个检查并补齐缺失索引；
+        重复执行时索引均已存在、不会产生任何 DDL。
+        """
+        if not self.engine:
+            logger.error("[初始化] 引擎未初始化，无法补建索引")
+            return False
+
+        try:
+            inspector = inspect(self.engine)
+            tables = inspector.get_table_names()
+            all_ok = True
+            created_any = False
+
+            for table_name in self.INDEXED_TABLES:
+                if table_name not in tables:
+                    logger.warning(
+                        f"[初始化] 表 {table_name} 不存在，跳过索引补建（将由 create_tables 创建）"
+                    )
+                    continue
+
+                table = Base.metadata.tables[table_name]
+                existing = {idx['name']: idx for idx in inspector.get_indexes(table_name)}
+
+                for orm_idx in table.indexes:
+                    idx_name = orm_idx.name
+                    cols = [c.name for c in orm_idx.columns]
+
+                    if idx_name in existing:
+                        # 同名索引已存在；列不一致仅告警，不自动重建（避免误删旧索引）
+                        if list(existing[idx_name].get('column_names') or []) != cols:
+                            logger.warning(
+                                f"[初始化] 索引 {idx_name} 已存在但列不一致: "
+                                f"库={existing[idx_name].get('column_names')} 模型={cols}，跳过"
+                            )
+                        continue
+
+                    col_sql = ", ".join(f"`{c}`" for c in cols)
+                    stmt = f"CREATE INDEX `{idx_name}` ON `{table_name}` ({col_sql})"
+                    try:
+                        with self.engine.begin() as conn:
+                            conn.execute(text(stmt))
+                        logger.info(
+                            f"[初始化] 索引补建成功: {idx_name} ON {table_name} ({', '.join(cols)})"
+                        )
+                        created_any = True
+                    except Exception as e:
+                        logger.warning(f"[初始化] 索引补建失败 {idx_name} ON {table_name}: {e}")
+                        all_ok = False
+
+            if not created_any:
+                logger.info("[初始化] 查询索引均已存在，无需补建")
+            return all_ok
+
+        except Exception as e:
+            logger.error(f"[初始化] 补建索引失败: {e}", exc_info=True)
+            return False
+
     def verify_tables(self) -> bool:
         """验证表结构"""
         if not self.engine:
@@ -362,6 +428,7 @@ class MySQLDatabaseInitializer:
             ("创建应用程序引擎", self._create_application_engine),
             ("修正表结构", self.reconcile_schema),
             ("创建数据表", self.create_tables),
+            ("补建查询索引", self._ensure_indexes),
             ("验证表结构", self.verify_tables),
         ]
 

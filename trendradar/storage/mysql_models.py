@@ -75,6 +75,8 @@ class RawDataFeed(Base):
     __table_args__ = (
         Index('idx_source_type_created', 'source_type', 'created_at'),
         Index('idx_source_id_created', 'source_id', 'created_at'),
+        # 支撑无 source_type 过滤、仅按时间范围过滤/倒序排序的查询（如 MCP mysql_recent_news）
+        Index('idx_created_at', 'created_at'),
         {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'},
     )
 
@@ -137,6 +139,8 @@ class FinancialSentiment(Base):
         Index('idx_alert_level_created', 'alert_level', 'created_at'),
         Index('idx_raw_data_id', 'raw_data_id'),
         Index('idx_sentiment_score', 'sentiment_score'),
+        # 支撑仅按时间范围过滤的聚合/倒序查询（如 MCP mysql_top_stocks、按时间取最新情感）
+        Index('idx_created_at', 'created_at'),
         {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'},
     )
 
