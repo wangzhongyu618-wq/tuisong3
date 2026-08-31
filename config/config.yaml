@@ -324,7 +324,7 @@ storage:
   # 启用后，爬虫抓取的数据和 AI 分析结果会同步写入 MySQL
   # 需要先初始化数据库表: python -m trendradar.storage.mysql_init
   mysql:
-    enabled: false                    # 是否启用 MySQL 存储（true=启用, false=关闭）
+    enabled: true                       # 是否启用 MySQL 存储（true=启用, false=关闭；可用环境变量 MYSQL_ENABLED 覆盖）
     host: "localhost"                 # 数据库主机地址
     port: 3306                        # 数据库端口
     username: "root"                  # 数据库用户名
