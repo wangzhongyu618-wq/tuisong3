@@ -10,10 +10,11 @@
 
 import json
 import logging
+import os
 import random
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class XueqiuSeleniumFetcher:
         wait_min: int = 2,
         wait_max: int = 5,
         executable_path: Optional[str] = None,
+        cookies: Optional[str] = None,
     ):
         self.target_url = target_url
         self.headless = headless
@@ -63,6 +65,9 @@ class XueqiuSeleniumFetcher:
         self.wait_min = wait_min
         self.wait_max = wait_max
         self.executable_path = executable_path
+        # 登录态 Cookie：显式参数优先；未传/留空时回读环境变量 XUEQIU_COOKIES。
+        # 支持格式：浏览器 Cookie 请求头串（"k1=v1; k2=v2"）或 JSON（{"k1":"v1"}）。
+        self.cookies = cookies if cookies else os.environ.get("XUEQIU_COOKIES", "")
 
     def _random_wait(self) -> None:
         """随机等待 2-5 秒，避免反爬"""
@@ -92,6 +97,111 @@ class XueqiuSeleniumFetcher:
             return webdriver.Chrome(options=options, service=Service(self.executable_path))
         # 未指定驱动路径时交给 selenium manager 自动匹配
         return webdriver.Chrome(options=options)
+
+    @staticmethod
+    def _parse_cookies(raw: str) -> List[Tuple[str, str]]:
+        """解析 Cookie 配置字符串。
+
+        支持两种格式：
+        - 浏览器 Cookie 请求头串："xq_a_token=abc; xqat=def"
+        - JSON 对象：'{"xq_a_token": "abc", "xqat": "def"}'
+
+        无效片段（无 name/value）自动忽略，返回 (name, value) 列表。
+        """
+        raw = (raw or "").strip()
+        if not raw:
+            return []
+
+        # 格式 2：JSON 对象 / 数组
+        if raw.startswith("{") or raw.startswith("["):
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("[雪球] cookies 配置以 { 或 [ 开头但不是合法 JSON，将按普通 Cookie 串解析")
+            else:
+                pairs: List[Tuple[str, str]] = []
+                if isinstance(data, dict):
+                    for name, value in data.items():
+                        if str(name).strip() and str(value).strip():
+                            pairs.append((str(name).strip(), str(value).strip()))
+                elif isinstance(data, list):
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        name = str(item.get("name", "")).strip()
+                        value = str(item.get("value", "")).strip()
+                        if name and value:
+                            pairs.append((name, value))
+                return pairs
+
+        # 格式 1：浏览器 Cookie 请求头串
+        pairs = []
+        for segment in raw.split(";"):
+            if "=" not in segment:
+                continue
+            name, value = segment.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if name and value:
+                pairs.append((name, value))
+        return pairs
+
+    def _wait_page_ready(self, driver) -> None:
+        """等待页面 document.readyState 加载完成。"""
+        WebDriverWait(driver, self.page_load_timeout).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+
+    def _inject_cookies(self, driver) -> int:
+        """向驱动注入登录态 Cookie。
+
+        Selenium 要求先在目标域下打开页面才能 add_cookie，
+        因此先访问雪球首页完成 Cookie 预置，再由调用方导航到目标页。
+
+        Returns:
+            实际注入成功的 cookie 条数。
+        """
+        cookie_pairs = self._parse_cookies(self.cookies)
+        if not cookie_pairs:
+            return 0
+
+        # 先落雪球域首页，否则 add_cookie 会抛 InvalidCookieDomainException
+        driver.get("https://xueqiu.com/")
+        self._wait_page_ready(driver)
+
+        injected = 0
+        for name, value in cookie_pairs:
+            try:
+                driver.add_cookie({"name": name, "value": value, "domain": ".xueqiu.com"})
+                injected += 1
+            except Exception as exc:  # pragma: no cover - 单条 cookie 异常不应中断整轮
+                logger.warning(f"[雪球] cookie 注入失败（已跳过）: {name}: {exc}")
+        self._random_wait()
+
+        # 登录态校验：雪球会话依赖 xq_a_token / xqat 等关键 cookie
+        try:
+            present = {str(c.get("name", "")) for c in driver.get_cookies()}
+            key_cookies = {"xq_a_token", "xqat", "xq_r_token", "xq_id_token", "xq_token_id"}
+            hits = sorted(key_cookies & present)
+            if hits:
+                logger.info(f"[雪球] 登录态 cookie 注入成功: 共 {injected} 条，命中关键会话 {hits}")
+            else:
+                logger.warning(
+                    f"[雪球] 已注入 {injected} 条 cookie，但未检测到关键会话 cookie"
+                    f"（xq_a_token/xqat 等），登录态可能无效"
+                )
+        except Exception:  # pragma: no cover - 校验失败不影响主流程
+            pass
+        return injected
+
+    def _warn_if_login_wall(self, driver) -> None:
+        """目标页加载后检测是否被重定向到登录页（cookie 失效/未生效）。"""
+        try:
+            current = (driver.current_url or "").lower()
+            if "signin" in current or "login" in current:
+                logger.warning("[雪球] 页面被重定向至登录页，登录态 cookie 可能已失效，请更新 XUEQIU_COOKIES")
+        except Exception:  # pragma: no cover
+            pass
 
     def _extract_source_identity(self, target_url: str) -> Dict[str, str]:
         parsed = urlparse(target_url)
@@ -219,12 +329,19 @@ class XueqiuSeleniumFetcher:
 
         driver = self._create_driver()
         try:
+            if self.cookies:
+                # 登录态注入：失败时降级为未登录态继续，不中断抓取
+                try:
+                    self._inject_cookies(driver)
+                except Exception as exc:
+                    logger.warning(f"[雪球] cookie 注入流程异常，将以未登录态继续: {exc}")
+
             driver.get(url)
             self._random_wait()
-            WebDriverWait(driver, self.page_load_timeout).until(
-                lambda d: d.execute_script("return document.readyState") == "complete"
-            )
+            self._wait_page_ready(driver)
             self._random_wait()
+            if self.cookies:
+                self._warn_if_login_wall(driver)
             posts = self._extract_post_candidates(driver)
             return posts[:max_posts]
         except Exception as exc:  # pragma: no cover

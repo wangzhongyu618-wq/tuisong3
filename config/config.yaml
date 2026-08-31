@@ -128,6 +128,31 @@ rss:
 
 
 # ===============================================================
+# 3.5 数据源 - 雪球（Selenium 大V动态）
+#
+# 由 trendradar/crawler/xueqiu_fetcher.py 读取（独立抓取模块，
+# examples/xueqiu_mysql_pipeline_demo.py 提供完整接入示例）。
+# 雪球对未登录访客限制严格，抓取大V动态需要登录态 Cookie。
+#
+# Cookie 获取方式：
+#   浏览器登录 xueqiu.com → F12 打开开发者工具 → Network →
+#   刷新页面 → 点击任意 xueqiu.com 请求 → 复制请求头中 "Cookie:"
+#   后面的整串内容（形如 xq_a_token=...; xqat=...; ...）
+#
+# 注入优先级：环境变量 XUEQIU_COOKIES > 本文件 cookies 配置。
+# 安全提示：本文件会被 git 跟踪，切勿把真实 Cookie 写在这里，
+#           建议只通过环境变量注入（当前终端会话）:
+#             set XUEQIU_COOKIES=xq_a_token=...;xqat=...
+#           （持久化到用户级，新开终端生效）:
+#             setx XUEQIU_COOKIES "xq_a_token=...;xqat=..."
+# ===============================================================
+xueqiu:
+  enabled: false                        # 预留开关：主流程接线后生效；当前直接调用 fetcher 时不受此开关影响
+  cookies: ""                           # 登录态 Cookie（留空则回读环境变量 XUEQIU_COOKIES；勿写真实值进本文件）
+  headless: true                        # 无头模式（调试时可改为 false 观察浏览器行为）
+
+
+# ===============================================================
 # 4. 报告模式
 # ===============================================================
 report:
