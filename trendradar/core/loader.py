@@ -221,6 +221,38 @@ def _load_rss_config(config_data: Dict) -> Dict:
     }
 
 
+def _load_xueqiu_config(config_data: Dict) -> Dict:
+    """加载雪球抓取配置（Selenium 大V动态，P1-①）
+
+    环境变量优先级：XUEQIU_ENABLED / XUEQIU_COOKIES / XUEQIU_MAX_POSTS > 本文件配置；
+    Cookie 建议只通过环境变量注入（config.yaml 会被 git 跟踪，勿写真实值）。
+    """
+    xq = config_data.get("xueqiu", {})
+
+    enabled_env = _get_env_bool("XUEQIU_ENABLED")
+    cookies_env = _get_env_str("XUEQIU_COOKIES")
+    max_posts_env = _get_env_int_or_none("XUEQIU_MAX_POSTS")
+
+    # target_urls 兼容字符串写法（单个 URL）与列表写法
+    raw_urls = xq.get("target_urls", [])
+    if isinstance(raw_urls, str):
+        raw_urls = [raw_urls] if raw_urls.strip() else []
+
+    try:
+        max_posts = max_posts_env if max_posts_env is not None else int(xq.get("max_posts", 10))
+    except (TypeError, ValueError):
+        max_posts = 10
+
+    return {
+        "ENABLED": enabled_env if enabled_env is not None else bool(xq.get("enabled", False)),
+        # Cookie：环境变量优先；留空时抓取阶段会判定未登录并优雅跳过
+        "COOKIES": cookies_env or xq.get("cookies", ""),
+        "HEADLESS": bool(xq.get("headless", True)),
+        "TARGET_URLS": [str(u).strip() for u in raw_urls if str(u).strip()],
+        "MAX_POSTS": max(1, max_posts),
+    }
+
+
 def _load_display_config(config_data: Dict) -> Dict:
     """加载推送内容显示配置"""
     display = config_data.get("display", {})
@@ -611,6 +643,9 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
     # RSS 配置
     config["RSS"] = _load_rss_config(config_data)
+
+    # 雪球抓取配置（P1-①：主流程接线）
+    config["XUEQIU"] = _load_xueqiu_config(config_data)
 
     # AI 模型共享配置
     config["AI"] = _load_ai_config(config_data)

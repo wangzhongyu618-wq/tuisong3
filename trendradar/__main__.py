@@ -16,7 +16,7 @@ from trendradar.context import AppContext
 from trendradar import __version__
 from trendradar.core import load_config
 from trendradar.core.analyzer import convert_keyword_stats_to_platform_stats
-from trendradar.crawler import DataFetcher
+from trendradar.crawler import DataFetcher, XueqiuSeleniumFetcher
 from trendradar.storage import convert_crawl_results_to_news_data
 from trendradar.utils.time import DEFAULT_TIMEZONE, is_within_days, calculate_days_old
 from trendradar.ai import AIAnalyzer, AIAnalysisResult
@@ -86,6 +86,9 @@ class NewsAnalyzer:
         self._rss_total_count = 0
         self._rss_matched_count = 0
         self._hotlist_total_count = 0
+
+        # 雪球大V动态（P1-①）：每轮 run 抓取的结果缓存，供分析流水线合入 RSS 统计区
+        self._xueqiu_posts: List[Dict] = []
 
         # 初始化存储管理器（使用 AppContext）
         self._init_storage_manager()
@@ -713,6 +716,14 @@ class NewsAnalyzer:
 
         self._hotlist_total_count = total_titles
 
+        # 雪球大V动态合入（P1-①）：以「雪球大V动态」独立词组追加到 RSS 统计区，
+        # 随后同时进入 AI 分析（rss_stats）与推送/HTML 展示。合入点放在
+        # 关键词/AI 筛选之后，保证 AI 筛选模式下雪球内容不被筛选结果覆盖。
+        # 条目带 skip_translation 标记，翻译阶段保留中文原文（财经语境译文失真）。
+        xueqiu_entry = self._build_xueqiu_rss_entry()
+        if xueqiu_entry:
+            rss_items = (list(rss_items) if rss_items else []) + [xueqiu_entry]
+
         # 如果是 platform 模式，转换数据结构
         if self.ctx.display_mode == "platform" and stats:
             stats = convert_keyword_stats_to_platform_stats(
@@ -1262,6 +1273,115 @@ class NewsAnalyzer:
             print(f"[RSS] 抓取失败: {e}")
             return None, None, None, set()
 
+    def _crawl_xueqiu_data(self) -> List[Dict]:
+        """抓取雪球大V动态（如果启用，P1-①）
+
+        对配置的每个主页调用 XueqiuSeleniumFetcher 抓取最新动态：
+        - 帖子由 fetcher 自带逻辑写入 MySQL raw_data_feed（source_type=xueqiu_v_dynamic）
+        - 帖子文本返回后缓存到 self._xueqiu_posts，由 _build_xueqiu_rss_entry
+          构建伪词组条目合入 RSS 统计区，进入 AI 分析与实体提取
+        - 未启用/未配置 URL/未配置 Cookie 时优雅跳过；任何失败只打印告警，不影响主流程
+
+        Returns:
+            帖子列表 [{content, published_at, url, author}]；未启用或失败返回 []
+        """
+        xq_config = self.ctx.config.get("XUEQIU", {})
+        if not xq_config.get("ENABLED", False):
+            return []
+
+        target_urls = xq_config.get("TARGET_URLS", [])
+        if not target_urls:
+            print("[雪球] 已启用但未配置 target_urls，跳过抓取")
+            return []
+
+        cookies = xq_config.get("COOKIES", "")
+        if not cookies:
+            print("[雪球] 未配置登录态 Cookie（环境变量 XUEQIU_COOKIES 或 config xueqiu.cookies），雪球限制未登录访问，跳过抓取")
+            return []
+
+        mysql_pipeline = self.ctx.get_mysql_pipeline()
+        all_posts: List[Dict] = []
+        for url in target_urls:
+            try:
+                fetcher = XueqiuSeleniumFetcher(
+                    target_url=url,
+                    headless=xq_config.get("HEADLESS", True),
+                    cookies=cookies,
+                )
+                result = fetcher.fetch_and_store_latest_posts(
+                    target_url=url,
+                    max_posts=xq_config.get("MAX_POSTS", 10),
+                    mysql_pipeline=mysql_pipeline,
+                )
+                posts = result.get("posts", []) or []
+                stored = result.get("stored_count", 0)
+                print(f"[雪球] {url} 抓取 {len(posts)} 条，入库 raw_data_feed {stored} 条")
+                for post in posts:
+                    content = (post.get("content") or "").strip()
+                    if not content:
+                        continue
+                    all_posts.append({
+                        "content": content,
+                        "published_at": post.get("published_at", ""),
+                        "url": post.get("url") or url,
+                        "author": result.get("source_name", "雪球用户"),
+                    })
+            except Exception as exc:
+                print(f"[雪球] 抓取失败（{url}）: {exc}")
+
+        return all_posts
+
+    def _build_xueqiu_rss_entry(self, max_title_len: int = 80) -> Optional[Dict]:
+        """把本轮雪球帖子构建为 RSS 统计区伪词组条目（P1-①）
+
+        与 rss_stats 同构：{"word", "count", "titles": [...]}。titles 条目
+        携带推送渲染所需字段（formatter 直接下标访问 time_display/count）
+        以及 skip_translation 标记（翻译阶段保留中文原文）。
+        无可用帖子时返回 None（不影响 RSS 统计区原结构）。
+
+        Args:
+            max_title_len: 单条帖子文本截断长度（控制推送/LLM 输入版面）
+        """
+        posts = getattr(self, "_xueqiu_posts", []) or []
+        if not posts:
+            return None
+
+        time_info = self.ctx.format_time()
+        titles = []
+        for post in posts:
+            content = (post.get("content") or "").strip()
+            if not content:
+                continue
+            display_title = (
+                content if len(content) <= max_title_len else content[:max_title_len] + "…"
+            )
+            # 发布时间缺失时回退当前时间，保证渲染字段始终为字符串
+            published_at = post.get("published_at", "") or time_info
+            titles.append({
+                "title": display_title,
+                "source_name": post.get("author", "雪球用户"),
+                "url": post.get("url", ""),
+                "mobile_url": "",
+                "rank": 99,
+                "ranks": [99],
+                "count": 1,
+                "first_time": published_at,
+                "last_time": published_at,
+                "time_display": published_at,
+                "is_new": True,
+                "matched_keyword": "雪球大V动态",
+                "skip_translation": True,
+            })
+
+        if not titles:
+            return None
+
+        return {
+            "word": "雪球大V动态",
+            "count": len(titles),
+            "titles": titles,
+        }
+
     def _process_rss_data_by_mode(self, rss_data) -> Tuple[Optional[List[Dict]], Optional[List[Dict]], Optional[List[Dict]], set]:
         """
         按报告模式处理 RSS 数据，返回与热榜相同格式的统计结构
@@ -1794,6 +1914,10 @@ class NewsAnalyzer:
 
             # 抓取 RSS 数据（如果启用），返回统计条目、新增条目和原始条目
             rss_items, rss_new_items, raw_rss_items, rss_new_urls = self._crawl_rss_data()
+
+            # 抓取雪球大V动态（如果启用，P1-①）：写入 raw_data_feed 并缓存，
+            # 供 _run_analysis_pipeline 合入 RSS 统计区与 AI 分析
+            self._xueqiu_posts = self._crawl_xueqiu_data()
 
             # 执行模式策略，传递 RSS 数据用于合并推送
             self._execute_mode_strategy(

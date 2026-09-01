@@ -131,6 +131,9 @@ class NotificationDispatcher:
         if not skip_rss and rss_items and scope.get("RSS", True) and display_regions.get("RSS", True):
             for stat_idx, stat in enumerate(rss_items):
                 for title_idx, title_data in enumerate(stat.get("titles", [])):
+                    # skip_translation 标记：保留原文（如雪球中文帖，财经语境译文反而失真）
+                    if title_data.get("skip_translation"):
+                        continue
                     titles_to_translate.append(title_data.get("title", ""))
                     title_locations.append(("rss_items", stat_idx, title_idx))
 

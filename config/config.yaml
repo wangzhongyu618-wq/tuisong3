@@ -147,9 +147,18 @@ rss:
 #             setx XUEQIU_COOKIES "xq_a_token=...;xqat=..."
 # ===============================================================
 xueqiu:
-  enabled: false                        # 预留开关：主流程接线后生效；当前直接调用 fetcher 时不受此开关影响
+  enabled: false                        # 主流程开关：true 时每轮运行自动抓取下方主页的最新动态（P1-① 已接线）
   cookies: ""                           # 登录态 Cookie（留空则回读环境变量 XUEQIU_COOKIES；勿写真实值进本文件）
   headless: true                        # 无头模式（调试时可改为 false 观察浏览器行为）
+  target_urls: []                       # 要抓取的雪球主页 URL 列表，如 ["https://xueqiu.com/1234567890"]
+  max_posts: 10                         # 每个主页最多抓取的最新动态条数
+
+# 主流程接线说明（P1-①）：
+#   enabled=true 且配置了 target_urls + Cookie 后，每轮运行会自动抓取雪球动态：
+#   1. 帖子文本写入 MySQL raw_data_feed（source_type=xueqiu_v_dynamic）
+#   2. 帖子以「雪球大V动态」词组合入 RSS 统计区，进入 AI 分析与实体提取
+#      （financial_sentiment 结构化沉淀，QMT 下游可消费）
+#   3. 未配置 Cookie 或 target_urls 时优雅跳过，不影响主流程
 
 
 # ===============================================================
