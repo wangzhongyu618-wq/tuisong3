@@ -418,6 +418,9 @@ class NewsAnalyzer:
                 # 保存到 MySQL（如果启用）：存储 5 板块分析快照
                 self._save_ai_result_to_mysql(result)
 
+                # 结构化实体提取 + 逐实体落库（如果启用，P0-①）
+                self._extract_entities_to_mysql(result, analyzer, ai_stats, ai_rss_stats)
+
                 # 记录 AI 分析
                 if schedule.once_analyze and schedule.period_key:
                     scheduler = self.ctx.create_scheduler()
@@ -1106,6 +1109,53 @@ class NewsAnalyzer:
                 print("[MySQL] AI 分析结果已存储")
         except Exception as e:
             print(f"[MySQL] 保存 AI 分析结果失败: {e}")
+
+    def _extract_entities_to_mysql(
+        self,
+        result: AIAnalysisResult,
+        analyzer: AIAnalyzer,
+        ai_stats: Optional[List[Dict]],
+        ai_rss_stats: Optional[List[Dict]],
+    ) -> None:
+        """结构化实体提取并逐实体写入 MySQL（如果启用，P0-①）
+
+        在 5 板块文本快照之外，用独立提示词对同一批新闻做第二次轻量
+        LLM 调用，提取金融实体（个股/ETF/板块主题）+ 情感得分，经
+        pipeline.process_ai_analysis() 逐实体写入 financial_sentiment 表，
+        形成"实体+情感分"的结构化沉淀（QMT 等下游消费端的数据源）。
+
+        开关：ai_analysis.enable_sentiment_extraction（默认 true）。
+        任何失败仅打印告警，不影响主分析/推送流程。
+        """
+        try:
+            analysis_config = self.ctx.config.get("AI_ANALYSIS", {})
+            if not analysis_config.get("ENABLE_SENTIMENT_EXTRACTION", True):
+                return
+
+            if not (result.success and not result.skipped):
+                return
+
+            pipeline = self.ctx.get_mysql_pipeline()
+            if pipeline is None:
+                return
+
+            extraction = analyzer.extract_entities(ai_stats or [], ai_rss_stats)
+            if extraction.get("skipped"):
+                print(f"[AI] 实体提取跳过: {extraction.get('error', '')}")
+                return
+            if extraction.get("error"):
+                print(f"[AI] 实体提取失败（不影响主流程）: {extraction.get('error')}")
+                return
+
+            entities = extraction.get("entities", [])
+            if not entities:
+                print("[AI] 实体提取完成: 本轮无金融实体")
+                return
+
+            count = pipeline.process_ai_analysis({"entities": entities})
+            print(f"[MySQL] AI 实体情感分析已存储: {count} 条")
+        except Exception as e:
+            print(f"[MySQL] 实体提取入库失败（不影响主流程）: {e}")
 
     def _crawl_rss_data(self) -> Tuple[Optional[List[Dict]], Optional[List[Dict]], Optional[List[Dict]], set]:
         """

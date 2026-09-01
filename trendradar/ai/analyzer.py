@@ -100,6 +100,12 @@ class AIAnalyzer:
             label="AI",
         )
 
+        # 加载实体提取提示词模板（P0-①：结构化实体提取，独立于 5 板块文本分析）
+        self.sentiment_system_prompt, self.sentiment_user_template = load_prompt_template(
+            analysis_config.get("SENTIMENT_PROMPT_FILE", "ai_sentiment_prompt.txt"),
+            label="实体提取",
+        )
+
     def analyze(
         self,
         stats: List[Dict],
@@ -554,15 +560,9 @@ class AIAnalyzer:
         )
         return "\n".join(lines), standalone_count
 
-    def _parse_response(self, response: str) -> AIAnalysisResult:
-        """解析 AI 响应"""
-        result = AIAnalysisResult(raw_response=response)
-
-        if not response or not response.strip():
-            result.error = "AI 返回空响应"
-            return result
-
-        # 提取 JSON 文本（去掉 markdown 代码块标记）
+    @staticmethod
+    def _extract_json_str(response: str) -> str:
+        """从 AI 响应中剥离 markdown 代码块标记，提取纯 JSON 文本"""
         json_str = response
 
         if "```json" in response:
@@ -579,7 +579,18 @@ class AIAnalyzer:
             if len(parts) >= 2:
                 json_str = parts[1]
 
-        json_str = json_str.strip()
+        return json_str.strip()
+
+    def _parse_response(self, response: str) -> AIAnalysisResult:
+        """解析 AI 响应"""
+        result = AIAnalysisResult(raw_response=response)
+
+        if not response or not response.strip():
+            result.error = "AI 返回空响应"
+            return result
+
+        # 提取 JSON 文本（去掉 markdown 代码块标记）
+        json_str = self._extract_json_str(response)
         if not json_str:
             result.error = "提取的 JSON 内容为空"
             result.core_trends = response[:500] + "..." if len(response) > 500 else response
@@ -642,3 +653,88 @@ class AIAnalyzer:
             result.success = True
 
         return result
+
+    def extract_entities(
+        self,
+        stats: List[Dict],
+        rss_stats: Optional[List[Dict]] = None,
+    ) -> Dict[str, Any]:
+        """
+        结构化金融实体提取（P0-①）
+
+        独立于 analyze() 的 5 板块文本分析：用专用提示词对同一批新闻
+        做第二次轻量 LLM 调用，输出结构化实体列表（type/name/code/
+        sentiment_score/alert_level/event_summary/context），
+        供 pipeline.process_ai_analysis() 逐实体写入 financial_sentiment 表。
+
+        Args:
+            stats: 热榜统计数据（与 analyze 的入参同构）
+            rss_stats: RSS 统计数据（可选）
+
+        Returns:
+            {"entities": [...], "skipped": bool, "error": str}
+            任何失败都降级为 {"entities": []}，绝不抛异常中断主流程。
+        """
+        empty: Dict[str, Any] = {"entities": [], "skipped": False, "error": ""}
+
+        if not self.sentiment_user_template:
+            return {**empty, "skipped": True, "error": "实体提取提示词未加载"}
+        if not self.client.api_key:
+            return {**empty, "skipped": True, "error": "未配置 AI API Key"}
+
+        # 复用与 analyze 相同的新闻准备逻辑（含 max_news 配额裁剪）
+        prepared = self._prepare_news_content(stats, rss_stats)
+        if not prepared.news_content and not prepared.rss_content:
+            return {**empty, "skipped": True, "error": "无新闻内容"}
+
+        current_time = self.get_time_func().strftime("%Y-%m-%d %H:%M:%S")
+        # 与 analyze 相同的安全替换策略（.replace 而非 .format，避免 JSON 示例花括号冲突）
+        user_prompt = self.sentiment_user_template
+        user_prompt = user_prompt.replace("{current_time}", current_time)
+        user_prompt = user_prompt.replace("{news_content}", prepared.news_content)
+        user_prompt = user_prompt.replace("{rss_content}", prepared.rss_content)
+        user_prompt = user_prompt.replace("{language}", self.language)
+
+        messages = []
+        if self.sentiment_system_prompt:
+            messages.append({"role": "system", "content": self.sentiment_system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+
+        try:
+            response = self.client.chat(messages)
+        except Exception as e:
+            return {**empty, "error": f"实体提取 LLM 调用失败: {type(e).__name__}: {e}"}
+
+        if not response or not response.strip():
+            return {**empty, "error": "实体提取返回空响应"}
+
+        json_str = self._extract_json_str(response)
+        if not json_str:
+            return {**empty, "error": "实体提取 JSON 内容为空"}
+
+        # 两步解析：标准 json.loads -> json_repair 本地修复
+        data = None
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            try:
+                from json_repair import repair_json
+                repaired = repair_json(json_str, return_objects=True)
+                if isinstance(repaired, dict):
+                    data = repaired
+                    print("[AI] 实体提取 JSON 本地修复成功（json_repair）")
+            except Exception:
+                pass
+
+        if not isinstance(data, dict):
+            return {**empty, "error": "实体提取 JSON 解析失败"}
+
+        entities = data.get("entities", [])
+        if not isinstance(entities, list):
+            return {**empty, "error": "entities 字段格式异常"}
+
+        # 过滤非字典项（脏数据由管道的逐条容错兜底）
+        cleaned = [e for e in entities if isinstance(e, dict)]
+        skipped_count = len(entities) - len(cleaned)
+        print(f"[AI] 实体提取完成: {len(cleaned)} 条实体（脏数据过滤 {skipped_count} 条）")
+        return {"entities": cleaned, "skipped": False, "error": ""}

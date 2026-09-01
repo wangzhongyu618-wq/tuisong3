@@ -449,6 +449,14 @@ ai_analysis:
                                     # true = 完整轨迹（如 1(09:30)→2(10:00)），AI 分析更准但多耗 0.5~1 倍 token
                                     # false = 简化格式（排名范围+出现次数），更省 token
 
+  # 结构化实体提取（P0-①）：AI 分析完成后，对同一批新闻额外做一次轻量 LLM 调用，
+  # 提取金融实体（个股/ETF/板块主题）+ 情感得分（-1.0~1.0）+ 告警级别，
+  # 逐条写入 MySQL financial_sentiment 表（需 storage.mysql.enabled: true），
+  # 形成"实体+情感分"结构化沉淀，供 QMT 等下游消费端查询。
+  # 每轮推送会多一次 LLM 调用；提取失败只告警，不影响主分析流程。
+  enable_sentiment_extraction: true
+  sentiment_extraction_prompt_file: "ai_sentiment_prompt.txt"   # 实体提取提示词（相对于 config 目录）
+
 
 
 

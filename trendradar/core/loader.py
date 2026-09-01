@@ -298,6 +298,13 @@ def _load_ai_analysis_config(config_data: Dict) -> Dict:
         "INCLUDE_RSS": ai_config.get("include_rss", True),
         "INCLUDE_RANK_TIMELINE": ai_config.get("include_rank_timeline", False),
         "INCLUDE_STANDALONE": ai_config.get("include_standalone", False),
+        # 结构化实体提取（P0-①）：AI 分析完成后，对同一批新闻做第二次轻量
+        # LLM 调用，提取金融实体+情感得分，逐条写入 financial_sentiment 表
+        # （依赖 storage.mysql.enabled；提示词文件见 sentiment_extraction_prompt_file）
+        "ENABLE_SENTIMENT_EXTRACTION": ai_config.get("enable_sentiment_extraction", True),
+        "SENTIMENT_PROMPT_FILE": ai_config.get(
+            "sentiment_extraction_prompt_file", "ai_sentiment_prompt.txt"
+        ),
     }
 
 
