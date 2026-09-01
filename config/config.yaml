@@ -457,7 +457,13 @@ ai_analysis:
   enable_sentiment_extraction: true
   sentiment_extraction_prompt_file: "ai_sentiment_prompt.txt"   # 实体提取提示词（相对于 config 目录）
 
-
+  # 防幻觉闸门（P0-③）：板块→A股/ETF 映射表（config/sector_mapping.yaml，人工维护）
+  # 对实体提取结果做后处理：LLM 编造的非法 code 强制清除；空 code 的板块主题
+  # 实体按 name 匹配映射表，自动补全对应 ETF 代码（如 存储芯片 → 512480）。
+  # LLM 给出的合法 code（精确个股）优先保留，不会被映射表覆盖。
+  # 文件缺失时降级为纯格式校验，不影响主流程。
+  enable_sector_mapping: true
+  sector_mapping_file: "sector_mapping.yaml"   # 映射表（相对于 config 目录）
 
 
 # ===============================================================

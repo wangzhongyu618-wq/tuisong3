@@ -41,6 +41,7 @@ def _make_analyzer(**analysis_overrides) -> AIAnalyzer:
         "MAX_NEWS_FOR_ANALYSIS": 50,
         "INCLUDE_RSS": True,
         "INCLUDE_STANDALONE": False,
+        "ENABLE_SECTOR_MAPPING": False,  # P0-① 用例隔离映射闸门（P0-③ 测试单独覆盖）
     }
     analysis_config.update(analysis_overrides)
     return AIAnalyzer(ai_config, analysis_config, lambda: datetime(2026, 8, 31, 12, 0, 0))

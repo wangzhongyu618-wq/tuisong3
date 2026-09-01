@@ -305,6 +305,13 @@ def _load_ai_analysis_config(config_data: Dict) -> Dict:
         "SENTIMENT_PROMPT_FILE": ai_config.get(
             "sentiment_extraction_prompt_file", "ai_sentiment_prompt.txt"
         ),
+        # 防幻觉闸门（P0-③）：板块→A股/ETF 映射表
+        # 实体 code 非法时清除、空 code 板块实体按映射表补全 ETF 代码
+        # （映射表见 sector_mapping_file；文件缺失降级为纯格式校验）
+        "ENABLE_SECTOR_MAPPING": ai_config.get("enable_sector_mapping", True),
+        "SECTOR_MAPPING_FILE": ai_config.get(
+            "sector_mapping_file", "sector_mapping.yaml"
+        ),
     }
 
 

@@ -106,6 +106,16 @@ class AIAnalyzer:
             label="实体提取",
         )
 
+        # 防幻觉闸门（P0-③）：板块→A股/ETF 映射表
+        # 作用：code 非法清除 + 空 code 板块实体按 name 补全 ETF 代码；
+        # 文件缺失时降级为纯格式校验，不影响主流程
+        self.sector_mapper = None
+        if analysis_config.get("ENABLE_SECTOR_MAPPING", True):
+            from trendradar.ai.sector_mapping import SectorMapper
+            self.sector_mapper = SectorMapper(
+                analysis_config.get("SECTOR_MAPPING_FILE", "sector_mapping.yaml")
+            )
+
     def analyze(
         self,
         stats: List[Dict],
@@ -736,5 +746,10 @@ class AIAnalyzer:
         # 过滤非字典项（脏数据由管道的逐条容错兜底）
         cleaned = [e for e in entities if isinstance(e, dict)]
         skipped_count = len(entities) - len(cleaned)
+
+        # 防幻觉闸门（P0-③）：非法 code 清除 + 空 code 板块实体映射补全
+        if self.sector_mapper is not None:
+            cleaned = self.sector_mapper.resolve_entities(cleaned)
+
         print(f"[AI] 实体提取完成: {len(cleaned)} 条实体（脏数据过滤 {skipped_count} 条）")
         return {"entities": cleaned, "skipped": False, "error": ""}
