@@ -17,6 +17,7 @@ MySQL 数据库初始化和迁移脚本
 """
 
 import sys
+import json
 import argparse
 import logging
 from pathlib import Path
@@ -27,7 +28,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # ORM 模型：导入 Base 即注册全部模型表，供 create_tables 使用
-from trendradar.storage.mysql_models import Base  # noqa: E402
+from trendradar.storage.mysql_models import Base, FinancialSentiment  # noqa: E402
 
 
 # 配置日志
@@ -216,6 +217,12 @@ class MySQLDatabaseInitializer:
                 '内容哈希去重列'
             ),
         },
+        'financial_sentiment': {
+            'event_hash': (
+                "ADD COLUMN `event_hash` VARCHAR(64) NULL COMMENT '事件哈希(sha256)，用于同事件跨轮次去重' AFTER `summary_event`",
+                '事件级去重列'
+            ),
+        },
     }
 
     def reconcile_schema(self) -> bool:
@@ -235,7 +242,7 @@ class MySQLDatabaseInitializer:
             tables = set(inspector.get_table_names())
             required = {
                 'raw_data_feed': ['id', 'source_type', 'content', 'url', 'source_id', 'source_name', 'related_tickers', 'additional_data', 'content_hash', 'created_at', 'updated_at'],
-                'financial_sentiment': ['id', 'stock_name', 'stock_code', 'sentiment_score', 'alert_level', 'summary_event', 'raw_data_id', 'analysis_metadata', 'created_at', 'updated_at'],
+                'financial_sentiment': ['id', 'stock_name', 'stock_code', 'sentiment_score', 'alert_level', 'summary_event', 'event_hash', 'raw_data_id', 'analysis_metadata', 'created_at', 'updated_at'],
             }
 
             missing_tables = [t for t in required if t not in tables]
@@ -457,6 +464,116 @@ class MySQLDatabaseInitializer:
             logger.error(f"[初始化] 启用去重失败: {e}", exc_info=True)
             return False
 
+    def _ensure_event_dedup(self) -> bool:
+        """
+        幂等启用 financial_sentiment 的事件级去重（P1-⑤）：
+
+        1. 幂等回填 event_hash：历史行直接复用 ORM 模型的
+           FinancialSentiment.compute_event_hash（与写入路径同一实现，单一事实源，
+           避免 SQL 端复刻归一化规则造成漂移）；
+        2. 唯一键缺失时先清理同事件重复旧行（保留最早 id），再建唯一键
+           uq_sentiment_event；
+        3. 无有效事件键的行 event_hash 保持 NULL，MySQL 唯一键对 NULL 天然放行，
+           不会误杀无法判重的记录。
+
+        新库由 ORM UniqueConstraint 建表时直接携带，本方法按状态逐项检查、
+        重复执行零副作用。
+        """
+        if not self.engine:
+            logger.error("[初始化] 引擎未初始化，无法启用事件去重")
+            return False
+
+        try:
+            inspector = inspect(self.engine)
+            if 'financial_sentiment' not in inspector.get_table_names():
+                logger.warning(
+                    "[初始化] 表 financial_sentiment 不存在，跳过事件去重启用"
+                    "（将由 create_tables 创建）"
+                )
+                return True
+
+            columns = [c['name'] for c in inspector.get_columns('financial_sentiment')]
+            if 'event_hash' not in columns:
+                logger.warning(
+                    "[初始化] 表 financial_sentiment 缺少 event_hash 列"
+                    "（应由修正表结构步骤迁移），跳过事件去重启用"
+                )
+                return True
+
+            has_unique = any(
+                idx.get('name') == 'uq_sentiment_event' and idx.get('unique')
+                for idx in inspector.get_indexes('financial_sentiment')
+            )
+
+            with self.engine.begin() as conn:
+                # 1) 幂等回填：历史行用 Python 端 compute_event_hash 计算
+                rows = conn.execute(text(
+                    "SELECT `id`, `stock_name`, `stock_code`, `analysis_metadata`, "
+                    "`summary_event` FROM `financial_sentiment` "
+                    "WHERE `event_hash` IS NULL OR `event_hash` = ''"
+                )).fetchall()
+                if rows:
+                    backfilled = 0
+                    for row in rows:
+                        row_id, stock_name, stock_code = row[0], row[1], row[2]
+                        metadata, summary_event = row[3], row[4]
+                        event_text = FinancialSentiment.extract_event_text(
+                            metadata, summary_event
+                        )
+                        event_hash = FinancialSentiment.compute_event_hash(
+                            stock_name, stock_code, event_text
+                        )
+                        if not event_hash:
+                            continue  # 无有效事件键，保持 NULL，不参与判重
+                        conn.execute(
+                            text(
+                                "UPDATE `financial_sentiment` SET `event_hash` = :h "
+                                "WHERE `id` = :id"
+                            ),
+                            {"h": event_hash, "id": row_id},
+                        )
+                        backfilled += 1
+                    if backfilled:
+                        logger.info(f"[初始化] 已回填 event_hash: {backfilled} 行")
+
+                if not has_unique:
+                    # 2) 先清理同事件重复旧行，否则 ADD UNIQUE KEY 会失败
+                    #    （event_hash 已含实体键，同 hash 即同事件；NULL 不参与）
+                    result = conn.execute(text(
+                        "DELETE r1 FROM `financial_sentiment` r1 "
+                        "JOIN `financial_sentiment` r2 "
+                        "ON r1.`event_hash` = r2.`event_hash` "
+                        "AND r1.`id` > r2.`id` "
+                        "WHERE r1.`event_hash` IS NOT NULL"
+                    ))
+                    if result.rowcount:
+                        logger.info(
+                            f"[初始化] 已清理重复情感记录: {result.rowcount} 行"
+                            "（每组保留最早记录）"
+                        )
+
+                    # 3) 建唯一键（同事件跨轮次只保留一条）
+                    try:
+                        conn.execute(text(
+                            "ALTER TABLE `financial_sentiment` "
+                            "ADD UNIQUE KEY `uq_sentiment_event` (`event_hash`)"
+                        ))
+                        logger.info(
+                            "[初始化] 唯一键 uq_sentiment_event 创建成功"
+                            "（同实体同事件文本只保留一条）"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"[初始化] 唯一键 uq_sentiment_event 创建失败: {e}"
+                        )
+                        return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"[初始化] 启用事件去重失败: {e}", exc_info=True)
+            return False
+
     def verify_tables(self) -> bool:
         """验证表结构"""
         if not self.engine:
@@ -487,7 +604,7 @@ class MySQLDatabaseInitializer:
                 if table_name == 'raw_data_feed':
                     required_cols = ['id', 'source_type', 'content', 'url', 'source_id', 'source_name', 'related_tickers', 'additional_data', 'created_at', 'updated_at']
                 elif table_name == 'financial_sentiment':
-                    required_cols = ['id', 'stock_name', 'stock_code', 'sentiment_score', 'alert_level', 'summary_event', 'raw_data_id', 'analysis_metadata', 'created_at', 'updated_at']
+                    required_cols = ['id', 'stock_name', 'stock_code', 'sentiment_score', 'alert_level', 'summary_event', 'event_hash', 'raw_data_id', 'analysis_metadata', 'created_at', 'updated_at']
                 else:
                     required_cols = []
 
@@ -516,6 +633,7 @@ class MySQLDatabaseInitializer:
             ("修正表结构", self.reconcile_schema),
             ("创建数据表", self.create_tables),
             ("启用内容去重", self._ensure_dedup),
+            ("启用事件去重", self._ensure_event_dedup),
             ("补建查询索引", self._ensure_indexes),
             ("验证表结构", self.verify_tables),
         ]

@@ -9,6 +9,7 @@ MySQL 数据库模型定义（SQLAlchemy ORM）
 
 from datetime import datetime
 from enum import Enum as PyEnum
+from typing import Optional
 from sqlalchemy import Column, Integer, String, Text, Float, DateTime, ForeignKey, Enum, DECIMAL, Index, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, validates
@@ -122,6 +123,7 @@ class FinancialSentiment(Base):
     - sentiment_score: 情感评分（-1.0 到 1.0，-1=极度负面，0=中立，1=极度正面）
     - alert_level: 告警级别（Low / Medium / High）
     - summary_event: 事件摘要（文本描述）
+    - event_hash: 事件哈希（sha256），(实体, 事件文本) 唯一，防止同一事件跨轮次重复入库（P1-⑤）
     - raw_data_id: 外键，指向 raw_data_feed 表
     - analysis_metadata: 分析元数据（JSON格式）
     - created_at: 记录创建时间（UTC）
@@ -140,6 +142,7 @@ class FinancialSentiment(Base):
         comment='告警级别'
     )
     summary_event = Column(Text, comment='事件摘要')
+    event_hash = Column(String(64), nullable=True, comment='事件哈希(sha256)，用于同事件跨轮次去重；无有效事件键时为 NULL（不参与判重）')
     raw_data_id = Column(Integer, ForeignKey('raw_data_feed.id', ondelete='SET NULL'), comment='原始数据ID')
     analysis_metadata = Column(JSONType, comment='分析元数据(JSON格式)')
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, comment='创建时间')
@@ -154,8 +157,54 @@ class FinancialSentiment(Base):
         Index('idx_sentiment_score', 'sentiment_score'),
         # 支撑仅按时间范围过滤的聚合/倒序查询（如 MCP mysql_top_stocks、按时间取最新情感）
         Index('idx_created_at', 'created_at'),
+        # 事件级去重：同一 (实体, 事件文本) 跨轮次只保留一条（event_hash 已含实体键；
+        # NULL 不参与唯一键判重，MySQL 对 NULL 天然放行）
+        UniqueConstraint('event_hash', name='uq_sentiment_event'),
         {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'},
     )
+
+    @staticmethod
+    def extract_event_text(metadata=None, summary_event=None) -> str:
+        """按 source_text → context → summary_event 顺序提取事件锚点文本。
+
+        - source_text/context 来自 analysis_metadata（提示词约定 context 为
+          "原文关键句摘录"，同一新闻跨轮次摘录高度稳定，是判重锚点首选）；
+        - metadata 兼容 dict 与 JSON 字符串两种形态（后者用于数据库回填场景）；
+        - 全部缺失/脏数据时返回 ''。
+        """
+        candidates: list = []
+        if isinstance(metadata, dict):
+            candidates = [metadata.get('source_text'), metadata.get('context')]
+        elif isinstance(metadata, str) and metadata.strip():
+            try:
+                parsed = json.loads(metadata)
+            except (ValueError, TypeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                candidates = [parsed.get('source_text'), parsed.get('context')]
+        for value in candidates:
+            if isinstance(value, str) and value.strip():
+                return value
+        return summary_event if isinstance(summary_event, str) else ''
+
+    @staticmethod
+    def compute_event_hash(stock_name, stock_code, event_text) -> Optional[str]:
+        """计算事件级去重哈希（写入与迁移回填共用的单一事实源）。
+
+        事件键 = (实体标识, 归一化事件文本)：
+        - 实体标识：stock_code（去首尾空白后大写）优先，为空时回退 stock_name
+          （板块/主题实体常无 code，提示词允许 code 为空串）；
+        - 事件文本：连续空白（含换行/制表）压缩归一；
+        - 分隔符 \\x1f 防止拼接歧义（"AB"+"C" 与 "A"+"BC" 不同键）。
+
+        任一部分为空返回 None（NULL 不参与唯一键判重，保持旧行为不误杀）。
+        """
+        entity_key = (stock_code or '').strip().upper() or (stock_name or '').strip().upper()
+        normalized_text = ' '.join(str(event_text).split()) if event_text else ''
+        if not entity_key or not normalized_text:
+            return None
+        raw = f"{entity_key}\x1f{normalized_text}"
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
     def __repr__(self):
         return f"<FinancialSentiment(id={self.id}, stock_code={self.stock_code}, sentiment_score={self.sentiment_score})>"
@@ -168,6 +217,7 @@ class FinancialSentiment(Base):
             'sentiment_score': self.sentiment_score,
             'alert_level': self.alert_level.value if self.alert_level else None,
             'summary_event': self.summary_event,
+            'event_hash': self.event_hash,
             'raw_data_id': self.raw_data_id,
             'analysis_metadata': self.analysis_metadata,
             'created_at': self.created_at.isoformat() if self.created_at else None,

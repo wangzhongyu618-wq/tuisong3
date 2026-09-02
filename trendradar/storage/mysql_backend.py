@@ -306,6 +306,13 @@ class MySQLStorageBackend:
             else:
                 alert_level_enum = alert_level
 
+            # 事件级去重哈希（P1-⑤）：同 (实体, 事件文本) 跨轮次只保留一条
+            event_hash = FinancialSentiment.compute_event_hash(
+                stock_name,
+                stock_code,
+                FinancialSentiment.extract_event_text(analysis_metadata, summary_event),
+            )
+
             with self.db_pool.session_scope() as session:
                 record = FinancialSentiment(
                     stock_name=stock_name,
@@ -313,6 +320,7 @@ class MySQLStorageBackend:
                     sentiment_score=sentiment_score,
                     alert_level=alert_level_enum,
                     summary_event=summary_event,
+                    event_hash=event_hash,
                     raw_data_id=raw_data_id,
                     analysis_metadata=analysis_metadata,
                 )
@@ -327,6 +335,12 @@ class MySQLStorageBackend:
                 return record_id
 
         except SQLAlchemyError as e:
+            if self._is_duplicate_key_error(e):
+                logger.info(
+                    f"[MySQL存储] 重复事件（同实体同事件文本已存在），跳过入库: "
+                    f"stock_code={stock_code}"
+                )
+                return None
             logger.error(f"[MySQL存储] 保存情感分析结果失败: {e}", exc_info=True)
             return None
 
@@ -336,6 +350,11 @@ class MySQLStorageBackend:
     ) -> int:
         """
         批量保存金融情感分析结果（逐条容错，单条脏数据不会拖垮整批）。
+
+        事件级去重（P1-⑤）：
+        - 批内同 (实体, 事件文本) 只入库一次（seen 集合）；
+        - 库内重复由唯一键 uq_sentiment_event 兜底（MySQL 1062 跳过，不视为失败）；
+        - 无有效事件键（event_hash=NULL）的记录不参与判重，保持旧行为。
 
         Args:
             records: 记录列表，每条记录的格式：
@@ -353,12 +372,17 @@ class MySQLStorageBackend:
             成功插入的记录数
         """
         saved = 0
+        skipped_dup = 0
+        seen_event_keys = set()
         with self.db_pool.session_scope() as session:
             for idx, record in enumerate(records, start=1):
                 try:
-                    # 字段清洗与长度防御
-                    stock_name = self._clean_text(record.get('stock_name'), 200) or '未知'
-                    stock_code = self._clean_text(record.get('stock_code'), 50) or 'UNKNOWN'
+                    # 字段清洗与长度防御（先留存未兜底的实体值供事件哈希使用：
+                    # 实体无法确定时事件键为空 → 不判重，避免跨实体误杀）
+                    stock_name_raw = self._clean_text(record.get('stock_name'), 200)
+                    stock_code_raw = self._clean_text(record.get('stock_code'), 50)
+                    stock_name = stock_name_raw or '未知'
+                    stock_code = stock_code_raw or 'UNKNOWN'
                     summary_event = self._clean_text(record.get('summary_event'), 10000)
 
                     # 情感评分校验/裁剪
@@ -388,12 +412,30 @@ class MySQLStorageBackend:
                         except (TypeError, ValueError):
                             raw_data_id = None
 
+                    # 事件级去重（P1-⑤）：批内同事件只入库一次；库内重复由唯一键 1062 兜底
+                    event_hash = FinancialSentiment.compute_event_hash(
+                        stock_name_raw,
+                        stock_code_raw,
+                        FinancialSentiment.extract_event_text(
+                            record.get('analysis_metadata'), summary_event
+                        ),
+                    )
+                    if event_hash:
+                        if event_hash in seen_event_keys:
+                            skipped_dup += 1
+                            logger.debug(
+                                f"[MySQL存储] 第 {idx} 条与批内前文同事件重复，已跳过"
+                            )
+                            continue
+                        seen_event_keys.add(event_hash)
+
                     row = FinancialSentiment(
                         stock_name=stock_name,
                         stock_code=stock_code,
                         sentiment_score=sentiment_score,
                         alert_level=alert_level_enum,
                         summary_event=summary_event,
+                        event_hash=event_hash,
                         raw_data_id=raw_data_id,
                         analysis_metadata=record.get('analysis_metadata'),
                     )
@@ -402,9 +444,15 @@ class MySQLStorageBackend:
                     saved += 1
                 except SQLAlchemyError as e:
                     session.rollback()
-                    logger.warning(
-                        f"[MySQL存储] 第 {idx} 条情感分析入库失败，已跳过: {e}"
-                    )
+                    if self._is_duplicate_key_error(e):
+                        skipped_dup += 1
+                        logger.info(
+                            f"[MySQL存储] 第 {idx} 条重复事件（同实体同事件文本已存在），已跳过"
+                        )
+                    else:
+                        logger.warning(
+                            f"[MySQL存储] 第 {idx} 条情感分析入库失败，已跳过: {e}"
+                        )
                 except (TypeError, ValueError, OverflowError) as e:
                     session.rollback()
                     logger.warning(
@@ -417,7 +465,13 @@ class MySQLStorageBackend:
                         exc_info=True,
                     )
 
-        logger.info(f"[MySQL存储] 批量保存情感分析结果: 成功 {saved}/{len(records)} 条")
+        if skipped_dup:
+            logger.info(
+                f"[MySQL存储] 批量保存情感分析结果: 成功 {saved}/{len(records)} 条，"
+                f"重复跳过 {skipped_dup} 条"
+            )
+        else:
+            logger.info(f"[MySQL存储] 批量保存情感分析结果: 成功 {saved}/{len(records)} 条")
         return saved
 
     def get_financial_sentiment(self, sentiment_id: int) -> Optional[Dict[str, Any]]:
