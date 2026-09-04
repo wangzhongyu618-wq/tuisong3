@@ -19,3 +19,6 @@ venv/
 .idea/
 .Thumbs.db
 .DS_Store
+
+# ===== 消费端运行时产物（examples/qmt_consumer_demo.py 水位文件） =====
+output/qmt_watermark.json
