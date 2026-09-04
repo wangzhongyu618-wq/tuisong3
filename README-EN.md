@@ -1938,16 +1938,11 @@ Templates support two placeholders:
 
    <br>
 
-### 5️⃣ Step 5: GitHub Actions Check-In & Remote Cloud Storage
+### 5️⃣ Step 5: Remote Cloud Storage
 
-   **v4.0.0 Important Change**: Introduced the "Activity Detection" mechanism; GitHub Actions need periodic check-ins to maintain operation.
-
-   - **Running Cycle**: Valid for **7 days**—service will automatically suspend when countdown ends.
-   - **Renewal Method**: Manually trigger the "Check In" workflow on the Actions page to reset the 7-day validity period.
-   - **Operation Path**: `Actions` → `Check In` → `Run workflow`
-   - **Design Philosophy**:
-     - If you forget for 7 days, maybe you don't really need it. Letting it stop is a digital detox, freeing you from the constant impact.
-     - GitHub Actions is a valuable public computing resource. The check-in mechanism aims to prevent wasted computing cycles, ensuring resources are allocated to truly active users who need them. Thank you for your understanding and support.
+   The upstream "Activity Detection / Check-In" mechanism has been removed in
+   this repository: GitHub Actions run on schedule indefinitely, with no
+   check-in required.
 
    ---
 
