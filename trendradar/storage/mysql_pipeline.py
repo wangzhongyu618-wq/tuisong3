@@ -75,6 +75,9 @@ class MySQLDataPipeline:
                         'ranks': item.get('ranks', []),
                         'crawl_time': item.get('crawl_time'),
                         'rank_timeline': item.get('rank_timeline'),
+                        # 雪球等调用方提供的作者与发布时间（无则空串）
+                        'author': item.get('author', ''),
+                        'published_at': item.get('published_at', ''),
                     }
                 }
                 records.append(record)

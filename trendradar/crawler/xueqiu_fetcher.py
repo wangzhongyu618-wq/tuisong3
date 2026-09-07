@@ -16,6 +16,7 @@ import re
 import shutil
 import tempfile
 import time
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -336,7 +337,8 @@ class XueqiuSeleniumFetcher:
             timestamp = self._clean_text(item.get("timestamp", "")) or self._extract_timestamp_from_text(text)
             results.append({
                 "content": text,
-                "published_at": timestamp,
+                # 相对时间在抓取时刻锚定为绝对时间；无法识别时保留原文
+                "published_at": self._parse_relative_time(timestamp) if timestamp else "",
             })
         return results
 
@@ -350,6 +352,61 @@ class XueqiuSeleniumFetcher:
     def _extract_timestamp_from_text(text: str) -> str:
         match = re.search(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2}[\s]+\d{1,2}:\d{2}:?\d{0,2}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}:\d{2})", text)
         return match.group(0) if match else ""
+
+    @staticmethod
+    def _parse_relative_time(text: str, now: Optional[datetime] = None) -> str:
+        """把雪球站内时间文本解析为带本地时区的绝对时间（ISO 格式）。
+
+        页面上的时间是相对/简化形式（"3小时前"、"昨天 14:30"、"09-07"），
+        存库后无法再换算，必须在抓取时刻锚定为绝对时间。输出带时区偏移
+        （如 2026-09-07T10:30:00+08:00），避免下游 format_iso_time_friendly
+        把 naive 时间误当作 UTC 造成 8 小时错位。
+
+        支持：刚刚 / N分钟前 / N小时前 / (今天|昨天) HH:MM / MM-DD( HH:MM)?
+        / yyyy-MM-dd( HH:MM(:SS)?)?（兼容 / 分隔）/ HH:MM；
+        自动剥离"编辑于"前缀与"来自xx"后缀。
+        无法识别时原样返回，宁可保留原文也不丢信息。
+        """
+        raw = (text or "").strip()
+        if not raw:
+            return ""
+        cleaned = re.sub(r"^(?:编辑|修改)于\s*", "", raw)
+        cleaned = re.sub(r"\s*来自\S*$", "", cleaned).strip()
+        anchor = now or datetime.now().astimezone()
+
+        def _fmt(dt: datetime) -> str:
+            return dt.replace(microsecond=0).isoformat()
+
+        try:
+            if cleaned == "刚刚":
+                return _fmt(anchor)
+            m = re.fullmatch(r"(\d+)\s*分钟前", cleaned)
+            if m:
+                return _fmt(anchor - timedelta(minutes=int(m.group(1))))
+            m = re.fullmatch(r"(\d+)\s*小时前", cleaned)
+            if m:
+                return _fmt(anchor - timedelta(hours=int(m.group(1))))
+            m = re.fullmatch(r"(今天|昨天)\s*(\d{1,2}):(\d{2})", cleaned)
+            if m:
+                day = anchor.date() - timedelta(days=1 if m.group(1) == "昨天" else 0)
+                return _fmt(datetime(day.year, day.month, day.day,
+                                     int(m.group(2)), int(m.group(3)), tzinfo=anchor.tzinfo))
+            m = re.fullmatch(r"(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?", cleaned)
+            if m:
+                return _fmt(datetime(anchor.year, int(m.group(1)), int(m.group(2)),
+                                     int(m.group(3) or 0), int(m.group(4) or 0), tzinfo=anchor.tzinfo))
+            m = re.fullmatch(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?", cleaned)
+            if m:
+                return _fmt(datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                                     int(m.group(4) or 0), int(m.group(5) or 0), int(m.group(6) or 0),
+                                     tzinfo=anchor.tzinfo))
+            m = re.fullmatch(r"(\d{1,2}):(\d{2})", cleaned)
+            if m:
+                return _fmt(datetime(anchor.year, anchor.month, anchor.day,
+                                     int(m.group(1)), int(m.group(2)), tzinfo=anchor.tzinfo))
+        except (ValueError, OverflowError):
+            return raw
+        return raw
 
     def fetch_latest_posts(
         self,
@@ -420,6 +477,7 @@ class XueqiuSeleniumFetcher:
         final_source_name = source_name or identity["source_name"]
 
         normalized_posts = []
+        crawl_now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
         for index, post in enumerate(posts, 1):
             published_at = post.get("published_at", "")
             content = post.get("content", "")
@@ -428,7 +486,8 @@ class XueqiuSeleniumFetcher:
                 "url": url,
                 "rank": index,
                 "ranks": [index],
-                "crawl_time": published_at or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                # crawl_time 语义是"抓取时刻"，不承担发布时间（published_at 单独记录）
+                "crawl_time": crawl_now,
                 "source_type": "xueqiu_v_dynamic",
                 "author": final_source_name,
                 "published_at": published_at,

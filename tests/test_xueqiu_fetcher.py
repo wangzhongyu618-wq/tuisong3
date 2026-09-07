@@ -2,6 +2,8 @@
 import trendradar.crawler.xueqiu_fetcher as xueqiu_module
 from trendradar.crawler.xueqiu_fetcher import XueqiuSeleniumFetcher
 
+import re
+
 
 class DummyDriver:
     def __init__(self):
@@ -77,7 +79,56 @@ def test_fetch_latest_posts_extracts_text_and_timestamp(monkeypatch):
 
     assert len(posts) == 1
     assert posts[0]["content"] == "今天买入了 AAPL，长期看好 AI 产业链"
-    assert posts[0]["published_at"] == "2026-08-18 09:15:30"
+    # 绝对时间输入解析后为带本地时区的 ISO 格式（偏移后缀随机器时区，不校验）
+    assert posts[0]["published_at"].startswith("2026-08-18T09:15:30")
+
+
+def test_parse_relative_time_formats():
+    from datetime import datetime, timedelta, timezone as tz
+
+    anchor = datetime(2026, 9, 7, 12, 0, 0, tzinfo=tz(timedelta(hours=8)))
+    parse = lambda s: XueqiuSeleniumFetcher._parse_relative_time(s, now=anchor)
+
+    # 相对时间 → 以抓取时刻为锚的绝对时间（带时区偏移）
+    assert parse("刚刚") == "2026-09-07T12:00:00+08:00"
+    assert parse("5分钟前") == "2026-09-07T11:55:00+08:00"
+    assert parse("3小时前") == "2026-09-07T09:00:00+08:00"
+
+    # 今天/昨天 + 时分
+    assert parse("今天 09:30") == "2026-09-07T09:30:00+08:00"
+    assert parse("昨天 14:05") == "2026-09-06T14:05:00+08:00"
+
+    # 月-日（今年内）与完整日期（兼容 / 分隔与秒）
+    assert parse("09-01") == "2026-09-01T00:00:00+08:00"
+    assert parse("09-01 08:15") == "2026-09-01T08:15:00+08:00"
+    assert parse("2026-08-18 09:15:30") == "2026-08-18T09:15:30+08:00"
+    assert parse("2026/08/18") == "2026-08-18T00:00:00+08:00"
+
+    # 纯 HH:MM → 今天该时刻
+    assert parse("10:20") == "2026-09-07T10:20:00+08:00"
+
+    # "编辑于/修改于"前缀与"来自xx"后缀自动剥离
+    assert parse("编辑于4小时前 来自iPhone") == "2026-09-07T08:00:00+08:00"
+    assert parse("修改于7小时前 来自iPhone") == "2026-09-07T05:00:00+08:00"
+    assert parse("编辑于 昨天 22:00 来自Android") == "2026-09-06T22:00:00+08:00"
+
+    # 无法识别 → 原样返回（不丢信息）
+    assert parse("上周三") == "上周三"
+    assert parse("") == ""
+    assert parse(None) == ""
+
+
+def test_parse_relative_time_output_is_tz_aware_for_downstream():
+    """输出必须带时区偏移：format_iso_time_friendly 把 naive 时间当 UTC，会错 8 小时。"""
+    import re as _re
+
+    parsed = XueqiuSeleniumFetcher._parse_relative_time("3小时前")
+    assert parsed
+    # 带偏移的 ISO 格式（如 2026-09-07T09:00:00+08:00），与运行机器时区无关
+    assert _re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}", parsed
+    ), parsed
+
 
 
 def test_parse_cookies_supports_header_string_and_json():
@@ -213,5 +264,8 @@ def test_fetch_and_store_normalizes_posts_with_source_type(monkeypatch):
     assert call["source_id"] == "123456"
     assert call["posts"][0]["source_type"] == "xueqiu_v_dynamic"
     assert call["posts"][0]["title"] == "今天买入了 AAPL，长期看好 AI 产业链"
+    # crawl_time 恒为抓取时刻（YYYY-MM-DD HH:MM:SS），不再借用发布时间文本
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", call["posts"][0]["crawl_time"])
+
     assert call["posts"][0]["published_at"] == "2026-08-18 09:15:30"
 
