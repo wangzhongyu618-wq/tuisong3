@@ -124,6 +124,7 @@ class TestLoadXueqiuConfig:
             "HEADLESS": True,
             "TARGET_URLS": [],
             "MAX_POSTS": 10,
+            "EXECUTABLE_PATH": "",
         }
 
     def test_yaml_values_read(self):
@@ -164,6 +165,14 @@ class TestLoadXueqiuConfig:
         monkeypatch.delenv("XUEQIU_MAX_POSTS", raising=False)
         cfg = _load_xueqiu_config({"xueqiu": {"max_posts": "abc"}})
         assert cfg["MAX_POSTS"] == 10
+
+    def test_executable_path_yaml_and_env(self, monkeypatch):
+        cfg = _load_xueqiu_config({"xueqiu": {"executable_path": "D:/drv/chromedriver.exe"}})
+        assert cfg["EXECUTABLE_PATH"] == "D:/drv/chromedriver.exe"
+
+        monkeypatch.setenv("XUEQIU_EXECUTABLE_PATH", "C:/drv/chromedriver.exe")
+        cfg = _load_xueqiu_config({"xueqiu": {"executable_path": "D:/drv/chromedriver.exe"}})
+        assert cfg["EXECUTABLE_PATH"] == "C:/drv/chromedriver.exe"
 
 
 # ========================================

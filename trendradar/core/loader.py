@@ -232,6 +232,7 @@ def _load_xueqiu_config(config_data: Dict) -> Dict:
     enabled_env = _get_env_bool("XUEQIU_ENABLED")
     cookies_env = _get_env_str("XUEQIU_COOKIES")
     max_posts_env = _get_env_int_or_none("XUEQIU_MAX_POSTS")
+    exec_path_env = _get_env_str("XUEQIU_EXECUTABLE_PATH")
 
     # target_urls 兼容字符串写法（单个 URL）与列表写法
     raw_urls = xq.get("target_urls", [])
@@ -250,6 +251,9 @@ def _load_xueqiu_config(config_data: Dict) -> Dict:
         "HEADLESS": bool(xq.get("headless", True)),
         "TARGET_URLS": [str(u).strip() for u in raw_urls if str(u).strip()],
         "MAX_POSTS": max(1, max_posts),
+        # chromedriver 显式路径：环境变量 XUEQIU_EXECUTABLE_PATH 优先；
+        # 留空时走 selenium manager 自动匹配（网络受限环境可能挂起，建议显式指定）
+        "EXECUTABLE_PATH": exec_path_env or str(xq.get("executable_path", "")).strip(),
     }
 
 

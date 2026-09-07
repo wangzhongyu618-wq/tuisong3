@@ -63,7 +63,9 @@ class MySQLDataPipeline:
             records = []
             for item in news_items:
                 record = {
-                    'source_type': 'hotlist_news',  # 热榜新闻
+                    # 尊重调用方标注的来源类型（如雪球动态 xueqiu_v_dynamic）；
+                    # 未标注时保持历史默认 hotlist_news，向后兼容热榜调用方
+                    'source_type': item.get('source_type') or 'hotlist_news',
                     'content': item.get('title', ''),
                     'url': item.get('url', ''),
                     'source_id': source_id,

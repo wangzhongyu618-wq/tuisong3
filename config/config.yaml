@@ -147,10 +147,11 @@ rss:
 #             setx XUEQIU_COOKIES "xq_a_token=...;xqat=..."
 # ===============================================================
 xueqiu:
-  enabled: false                        # 主流程开关：true 时每轮运行自动抓取下方主页的最新动态（P1-① 已接线）
+  enabled: true                         # 主流程开关：true 时每轮运行自动抓取下方主页的最新动态（P1-① 已接线；Cookie 已持久化到用户级环境变量 XUEQIU_COOKIES）
   cookies: ""                           # 登录态 Cookie（留空则回读环境变量 XUEQIU_COOKIES；勿写真实值进本文件）
   headless: true                        # 无头模式（调试时可改为 false 观察浏览器行为）
-  target_urls: []                       # 要抓取的雪球主页 URL 列表，如 ["https://xueqiu.com/1234567890"]
+  executable_path: ""                   # chromedriver 路径（留空走 selenium manager 自动匹配；本机已持久化 XUEQIU_EXECUTABLE_PATH，此处留空即可）
+  target_urls: ["https://xueqiu.com/"]  # 登录后首页时间线（热门/关注动态流）；要盯特定大V就加 "https://xueqiu.com/用户ID"
   max_posts: 10                         # 每个主页最多抓取的最新动态条数
 
 # 主流程接线说明（P1-①）：

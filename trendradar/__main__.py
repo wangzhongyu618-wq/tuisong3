@@ -1307,6 +1307,7 @@ class NewsAnalyzer:
                     target_url=url,
                     headless=xq_config.get("HEADLESS", True),
                     cookies=cookies,
+                    executable_path=xq_config.get("EXECUTABLE_PATH", "") or None,
                 )
                 result = fetcher.fetch_and_store_latest_posts(
                     target_url=url,

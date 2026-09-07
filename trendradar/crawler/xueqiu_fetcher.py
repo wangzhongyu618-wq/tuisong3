@@ -13,6 +13,8 @@ import logging
 import os
 import random
 import re
+import shutil
+import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -87,6 +89,11 @@ class XueqiuSeleniumFetcher:
         options.add_argument("--disable-extensions")
         options.add_argument(f"--user-agent={self.DEFAULT_HEADERS['User-Agent']}")
         options.add_argument("--lang=zh-CN,zh")
+        # 独立临时 profile：避免与本机正在运行的 Chrome 实例冲突
+        # （Windows 下复用默认 profile 会导致 headless 启动即崩溃：
+        #   session not created: DevToolsActivePort file doesn't exist）
+        self._user_data_dir = tempfile.mkdtemp(prefix="xq_chrome_")
+        options.add_argument(f"--user-data-dir={self._user_data_dir}")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
 
@@ -229,13 +236,13 @@ class XueqiuSeleniumFetcher:
 
             const fromDom = () => {
                 const selectors = [
+                    '[data-status-id]',
+                    '[class*="timeline__item__content"]',
                     '.status-item',
                     '.status__item',
                     '.status-content',
                     '.status-content__text',
                     '.status-main',
-                    '[data-status-id]',
-                    'article',
                 ];
 
                 for (const selector of selectors) {
@@ -250,11 +257,31 @@ class XueqiuSeleniumFetcher:
                             timestamp = timeNode.getAttribute('datetime') || timeNode.textContent || timeNode.innerText || '';
                         }
                         if (!timestamp) {
-                            const parent = node.parentElement || document.body;
-                            const candidate = parent.querySelector('time, .time, .status-time, [datetime]');
+                            // 精确匹配帖子容器（注意：[class*="timeline__item"] 会命中 content 节点自身）
+                            const parent = node.closest('.timeline__item') || node.parentElement || document.body;
+                            const candidate = parent.querySelector('time, .time, .status-time, [datetime], .date-and-source');
                             if (candidate) {
-                                timestamp = candidate.getAttribute('datetime') || candidate.textContent || candidate.innerText || '';
+                                timestamp = (candidate.getAttribute('datetime') || candidate.textContent || candidate.innerText || '')
+                                    .replace(/来自雪球/g, '')
+                                    .replace(/[·•]/g, ' ')
+                                    .replace(/\s+/g, ' ')
+                                    .trim();
                             }
+                        }
+                        addCandidate(text, timestamp);
+                    }
+                }
+
+                // 宽泛兜底：无具体 selector 命中时才尝试 article（避免与具体节点重复计入）
+                if (!results.length) {
+                    for (const node of document.querySelectorAll('article')) {
+                        const textNode = node.innerText || node.textContent || '';
+                        const text = String(textNode).replace(/\s+/g, ' ').trim();
+                        if (!text || text.length < 8) continue;
+                        let timestamp = '';
+                        const timeNode = node.querySelector('time, .time, .status-time, [datetime]');
+                        if (timeNode) {
+                            timestamp = timeNode.getAttribute('datetime') || timeNode.textContent || timeNode.innerText || '';
                         }
                         addCandidate(text, timestamp);
                     }
@@ -286,10 +313,17 @@ class XueqiuSeleniumFetcher:
             fromDom();
             fromState();
             return results.slice(0, 15);
-        })();
+        })()
         """
         try:
-            data = driver.execute_script(script)
+            # 首页/时间线为异步渲染：无结果时轮询重试（页面可能仍在加载帖子流）
+            # 注意：script 是裸 IIFE，必须用括号包裹后 return，否则 execute_script 恒返回 None
+            data = []
+            for attempt in range(5):
+                data = driver.execute_script("return (" + script + ")") or []
+                if data:
+                    break
+                time.sleep(2)
         except Exception as exc:  # pragma: no cover
             logger.warning(f"[雪球] 提取动态失败: {exc}")
             return []
@@ -352,6 +386,8 @@ class XueqiuSeleniumFetcher:
                 driver.quit()
             except Exception:  # pragma: no cover
                 pass
+            # 清理本次会话使用的临时 profile 目录
+            shutil.rmtree(getattr(self, "_user_data_dir", ""), ignore_errors=True)
 
     def fetch_and_store_latest_posts(
         self,
