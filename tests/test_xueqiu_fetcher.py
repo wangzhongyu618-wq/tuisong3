@@ -269,3 +269,75 @@ def test_fetch_and_store_normalizes_posts_with_source_type(monkeypatch):
 
     assert call["posts"][0]["published_at"] == "2026-08-18 09:15:30"
 
+
+# ========================================
+# 登录态监控（last_login_state）
+# ========================================
+
+class LoginWallDriver(CookieAwareDriver):
+    """被重定向到登录页的驱动替身（cookie 过期场景）。"""
+
+    @property
+    def current_url(self):
+        return "https://xueqiu.com/S/signin"
+
+
+def test_login_state_no_cookies(monkeypatch):
+    """未配置 cookie 时标记 no_cookies（而非误报登录墙）。"""
+    monkeypatch.setattr(xueqiu_module, "WebDriverWait", DummyWait)
+    monkeypatch.delenv("XUEQIU_COOKIES", raising=False)
+
+    fetcher = XueqiuSeleniumFetcher(headless=True)
+    monkeypatch.setattr(fetcher, "_create_driver", lambda: DummyDriver())
+    monkeypatch.setattr(fetcher, "_random_wait", lambda: None)
+
+    fetcher.fetch_latest_posts("https://xueqiu.com/u/123456")
+    assert fetcher.last_login_state == "no_cookies"
+
+
+def test_login_state_login_wall_detected(monkeypatch):
+    """cookie 失效（重定向登录页）必须标记 login_wall，不允许静默降级。"""
+    monkeypatch.setattr(xueqiu_module, "WebDriverWait", DummyWait)
+    monkeypatch.delenv("XUEQIU_COOKIES", raising=False)
+
+    fetcher = XueqiuSeleniumFetcher(headless=True, cookies="xq_a_token=expired")
+    monkeypatch.setattr(fetcher, "_create_driver", lambda: LoginWallDriver())
+    monkeypatch.setattr(fetcher, "_random_wait", lambda: None)
+
+    fetcher.fetch_latest_posts("https://xueqiu.com/u/123456")
+    assert fetcher.last_login_state == "login_wall"
+
+
+def test_login_state_ok_when_page_normal(monkeypatch):
+    """页面未被重定向时标记 ok。"""
+    monkeypatch.setattr(xueqiu_module, "WebDriverWait", DummyWait)
+    monkeypatch.delenv("XUEQIU_COOKIES", raising=False)
+
+    fetcher = XueqiuSeleniumFetcher(headless=True, cookies="xq_a_token=fresh")
+    monkeypatch.setattr(fetcher, "_create_driver", lambda: CookieAwareDriver())
+    monkeypatch.setattr(fetcher, "_random_wait", lambda: None)
+
+    fetcher.fetch_latest_posts("https://xueqiu.com/u/123456")
+    assert fetcher.last_login_state == "ok"
+
+
+def test_fetch_and_store_result_includes_login_state(monkeypatch):
+    """fetch_and_store_latest_posts 的两个返回路径都要携带 login_state。"""
+    fetcher = XueqiuSeleniumFetcher(headless=True)
+    monkeypatch.setattr(
+        fetcher, "fetch_latest_posts",
+        lambda url, max_posts=10: [{"content": "帖", "published_at": ""}],
+    )
+    result = fetcher.fetch_and_store_latest_posts(
+        "https://xueqiu.com/u/123456", max_posts=5, mysql_pipeline=FakePipeline(),
+    )
+    assert result["login_state"] == "unknown"  # 未真实抓取，保持初始值
+
+    # posts 为空的早退路径同样携带 login_state
+    monkeypatch.setattr(fetcher, "fetch_latest_posts", lambda url, max_posts=10: [])
+    empty = fetcher.fetch_and_store_latest_posts(
+        "https://xueqiu.com/u/123456", max_posts=5, mysql_pipeline=FakePipeline(),
+    )
+    assert empty["stored_count"] == 0
+    assert empty["login_state"] == "unknown"
+

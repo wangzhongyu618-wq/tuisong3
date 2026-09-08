@@ -226,6 +226,81 @@ class TestCrawlXueqiuData:
 
 
 # ========================================
+# 登录墙检测与告警（P0-② 后续：cookie 失效监控）
+# ========================================
+
+class _WallFetcher(_FakeFetcher):
+    """命中登录墙的 fetcher 替身：返回 login_state=login_wall、无帖子"""
+
+    def fetch_and_store_latest_posts(self, target_url=None, max_posts=10,
+                                     mysql_pipeline=None, **kwargs):
+        return {
+            "stored_count": 0,
+            "posts": [],
+            "source_id": "someone",
+            "source_name": "雪球大V",
+            "login_state": "login_wall",
+        }
+
+
+class TestLoginWallAlert:
+    def test_login_wall_triggers_notify(self):
+        analyzer = _bare_analyzer(config=_xueqiu_config())
+        analyzer.ctx.format_date = lambda: "2026-08-31"
+        notified = []
+        analyzer._notify_xueqiu_login_expired = lambda urls, **kw: notified.append(list(urls)) or True
+
+        with patch.object(main_module, "XueqiuSeleniumFetcher", _WallFetcher):
+            analyzer._crawl_xueqiu_data()
+
+        assert notified == [["https://xueqiu.com/someone"]]
+
+    def test_normal_fetch_does_not_notify(self):
+        analyzer = _bare_analyzer(config=_xueqiu_config())
+        notified = []
+        analyzer._notify_xueqiu_login_expired = lambda urls, **kw: notified.append(list(urls))
+
+        with patch.object(main_module, "XueqiuSeleniumFetcher", _FakeFetcher):
+            analyzer._crawl_xueqiu_data()
+
+        assert notified == []
+
+    def test_notify_sends_alert_and_dedups_same_day(self, tmp_path, monkeypatch):
+        state_path = str(tmp_path / "alert_state.json")
+        calls = []
+
+        def fake_send_alert(title, message, config, timeout=30):
+            calls.append({"title": title, "message": message})
+            return {"feishu": True}
+
+        monkeypatch.setattr("trendradar.notification.alert.send_alert", fake_send_alert)
+        analyzer = _bare_analyzer(config=_xueqiu_config())
+        analyzer.ctx.format_date = lambda: "2026-08-31"
+
+        # 首次告警：发送且写入状态文件
+        assert analyzer._notify_xueqiu_login_expired(
+            ["https://xueqiu.com/a"], state_path=state_path
+        ) is True
+        assert len(calls) == 1
+        assert "雪球登录态失效" in calls[0]["title"]
+        assert "https://xueqiu.com/a" in calls[0]["message"]
+
+        # 同日再次告警：去重跳过，不再发送
+        assert analyzer._notify_xueqiu_login_expired(
+            ["https://xueqiu.com/a"], state_path=state_path
+        ) is False
+        assert len(calls) == 1
+
+        # 状态文件损坏 → 视为今日未告警，可再次发送
+        with open(state_path, "w", encoding="utf-8") as f:
+            f.write("{broken")
+        assert analyzer._notify_xueqiu_login_expired(
+            ["https://xueqiu.com/a"], state_path=state_path
+        ) is True
+        assert len(calls) == 2
+
+
+# ========================================
 # NewsAnalyzer._build_xueqiu_rss_entry
 # ========================================
 

@@ -1301,6 +1301,7 @@ class NewsAnalyzer:
 
         mysql_pipeline = self.ctx.get_mysql_pipeline()
         all_posts: List[Dict] = []
+        login_wall_urls: List[str] = []
         for url in target_urls:
             try:
                 fetcher = XueqiuSeleniumFetcher(
@@ -1316,6 +1317,9 @@ class NewsAnalyzer:
                 )
                 posts = result.get("posts", []) or []
                 stored = result.get("stored_count", 0)
+                if result.get("login_state") == "login_wall":
+                    login_wall_urls.append(url)
+                    print(f"[雪球] ⚠️ {url} 命中登录墙，登录态 Cookie 可能已失效")
                 print(f"[雪球] {url} 抓取 {len(posts)} 条，入库 raw_data_feed {stored} 条")
                 for post in posts:
                     content = (post.get("content") or "").strip()
@@ -1330,7 +1334,70 @@ class NewsAnalyzer:
             except Exception as exc:
                 print(f"[雪球] 抓取失败（{url}）: {exc}")
 
+        if login_wall_urls:
+            self._notify_xueqiu_login_expired(login_wall_urls)
+
         return all_posts
+
+    def _notify_xueqiu_login_expired(self, failed_urls: List[str], state_path: Optional[str] = None) -> bool:
+        """雪球登录态失效告警（同一自然日最多推送一次）。
+
+        Cookie 过期后雪球会静默降级为未登录抓取，数据断流而无人知晓；
+        这里向已配置的推送渠道发一条纯文本告警，并用临时目录下的状态
+        文件按"当天"去重，避免每轮循环重复轰炸。发送失败只打印日志，
+        不影响主流程。
+
+        Args:
+            failed_urls: 命中登录墙的主页 URL 列表
+            state_path: 去重状态文件路径（默认系统临时目录，测试可注入）
+
+        Returns:
+            是否实际执行了本轮告警流程（False = 当日已告警过被跳过）
+        """
+        import json
+        import tempfile
+
+        from trendradar.notification.alert import send_alert
+
+        state_path = state_path or os.path.join(
+            tempfile.gettempdir(), "trendradar_xueqiu_login_alert.json"
+        )
+        today = self.ctx.format_date()
+
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            if state.get("date") == today:
+                print("[雪球] 登录态失效告警今日已发送过，跳过重复推送")
+                return False
+        except (OSError, ValueError):
+            pass  # 状态文件不存在或损坏 → 视为今日未告警
+
+        url_lines = "\n".join(f"- {u}" for u in failed_urls)
+        results = send_alert(
+            title="⚠️ 雪球登录态失效",
+            message=(
+                "雪球抓取命中登录墙，登录态 Cookie 可能已过期，本轮数据不完整。\n"
+                "请更新环境变量 XUEQIU_COOKIES（或 config xueqiu.cookies）后重试。\n"
+                f"受影响主页（{len(failed_urls)} 个）：\n{url_lines}"
+            ),
+            config=self.ctx.config,
+        )
+
+        # 无论渠道是否配置成功都记录"今日已告警"，防止无渠道配置时每轮刷日志
+        try:
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump({"date": today, "results": results}, f, ensure_ascii=False)
+        except OSError:  # pragma: no cover
+            pass
+
+        if results:
+            sent = [name for name, ok in results.items() if ok]
+            failed = [name for name, ok in results.items() if not ok]
+            print(f"[雪球] 登录态失效告警已发送: 成功 {sent or '无'}，失败 {failed or '无'}")
+        else:
+            print("[雪球] 登录态失效，但未配置任何推送渠道，仅记录本条日志提醒")
+        return True
 
     def _build_xueqiu_rss_entry(self, max_title_len: int = 80) -> Optional[Dict]:
         """把本轮雪球帖子构建为 RSS 统计区伪词组条目（P1-①）

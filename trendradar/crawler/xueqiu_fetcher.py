@@ -71,6 +71,10 @@ class XueqiuSeleniumFetcher:
         # 登录态 Cookie：显式参数优先；未传/留空时回读环境变量 XUEQIU_COOKIES。
         # 支持格式：浏览器 Cookie 请求头串（"k1=v1; k2=v2"）或 JSON（{"k1":"v1"}）。
         self.cookies = cookies if cookies else os.environ.get("XUEQIU_COOKIES", "")
+        # 最近一次 fetch_latest_posts 的登录态判定（监控/告警用）：
+        # "ok"=页面正常 | "login_wall"=被重定向登录页(cookie 失效) |
+        # "no_cookies"=未配置 cookie | "error"=抓取异常 | "unknown"=尚未运行
+        self.last_login_state = "unknown"
 
     def _random_wait(self) -> None:
         """随机等待 2-5 秒，避免反爬"""
@@ -202,14 +206,20 @@ class XueqiuSeleniumFetcher:
             pass
         return injected
 
-    def _warn_if_login_wall(self, driver) -> None:
-        """目标页加载后检测是否被重定向到登录页（cookie 失效/未生效）。"""
+    def _warn_if_login_wall(self, driver) -> bool:
+        """目标页加载后检测是否被重定向到登录页（cookie 失效/未生效）。
+
+        Returns:
+            True 表示命中登录墙（登录态已失效）；False 表示页面正常或无法判定。
+        """
         try:
             current = (driver.current_url or "").lower()
             if "signin" in current or "login" in current:
                 logger.warning("[雪球] 页面被重定向至登录页，登录态 cookie 可能已失效，请更新 XUEQIU_COOKIES")
+                return True
         except Exception:  # pragma: no cover
             pass
+        return False
 
     def _extract_source_identity(self, target_url: str) -> Dict[str, str]:
         parsed = urlparse(target_url)
@@ -222,7 +232,9 @@ class XueqiuSeleniumFetcher:
         return {"source_id": source_id, "source_name": source_name}
 
     def _extract_post_candidates(self, driver) -> List[Dict[str, Any]]:
-        script = """
+        # 注意 r""" 原始字符串：JS 里的 \s 等正则转义不能被 Python 再解释，
+        # 否则触发 DeprecationWarning: invalid escape sequence
+        script = r"""
         (() => {
             const results = [];
             const seen = new Set();
@@ -426,16 +438,22 @@ class XueqiuSeleniumFetcher:
                     self._inject_cookies(driver)
                 except Exception as exc:
                     logger.warning(f"[雪球] cookie 注入流程异常，将以未登录态继续: {exc}")
+            else:
+                self.last_login_state = "no_cookies"
 
             driver.get(url)
             self._random_wait()
             self._wait_page_ready(driver)
             self._random_wait()
             if self.cookies:
-                self._warn_if_login_wall(driver)
+                # 登录墙判定：cookie 失效会被重定向到登录页，静默降级必须显性化
+                self.last_login_state = (
+                    "login_wall" if self._warn_if_login_wall(driver) else "ok"
+                )
             posts = self._extract_post_candidates(driver)
             return posts[:max_posts]
         except Exception as exc:  # pragma: no cover
+            self.last_login_state = "error"
             logger.error(f"[雪球] 抓取失败: {exc}", exc_info=True)
             return []
         finally:
@@ -470,7 +488,13 @@ class XueqiuSeleniumFetcher:
 
         posts = self.fetch_latest_posts(url, max_posts=max_posts)
         if not posts:
-            return {"stored_count": 0, "posts": [], "source_id": source_id or "xueqiu_user", "source_name": source_name or "雪球用户"}
+            return {
+                "stored_count": 0,
+                "posts": [],
+                "source_id": source_id or "xueqiu_user",
+                "source_name": source_name or "雪球用户",
+                "login_state": self.last_login_state,
+            }
 
         identity = self._extract_source_identity(url)
         final_source_id = source_id or identity["source_id"]
@@ -527,4 +551,5 @@ class XueqiuSeleniumFetcher:
             ],
             "source_id": final_source_id,
             "source_name": final_source_name,
+            "login_state": self.last_login_state,
         }
