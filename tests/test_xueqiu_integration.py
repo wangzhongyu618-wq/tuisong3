@@ -14,6 +14,8 @@
 - dispatcher.translate_content：skip_translation 标记保留原文
 """
 
+import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -125,6 +127,7 @@ class TestLoadXueqiuConfig:
             "TARGET_URLS": [],
             "MAX_POSTS": 10,
             "EXECUTABLE_PATH": "",
+            "INTERVAL_MINUTES": 120,
         }
 
     def test_yaml_values_read(self):
@@ -173,6 +176,24 @@ class TestLoadXueqiuConfig:
         monkeypatch.setenv("XUEQIU_EXECUTABLE_PATH", "C:/drv/chromedriver.exe")
         cfg = _load_xueqiu_config({"xueqiu": {"executable_path": "D:/drv/chromedriver.exe"}})
         assert cfg["EXECUTABLE_PATH"] == "C:/drv/chromedriver.exe"
+
+    def test_interval_minutes_yaml_env_and_invalid(self, monkeypatch):
+        cfg = _load_xueqiu_config({"xueqiu": {"interval_minutes": 30}})
+        assert cfg["INTERVAL_MINUTES"] == 30
+
+        # 环境变量优先
+        monkeypatch.setenv("XUEQIU_INTERVAL_MINUTES", "45")
+        cfg = _load_xueqiu_config({"xueqiu": {"interval_minutes": 30}})
+        assert cfg["INTERVAL_MINUTES"] == 45
+
+        # 非法值回退默认 120
+        monkeypatch.delenv("XUEQIU_INTERVAL_MINUTES", raising=False)
+        cfg = _load_xueqiu_config({"xueqiu": {"interval_minutes": "abc"}})
+        assert cfg["INTERVAL_MINUTES"] == 120
+
+        # 负数 clamp 到 0（禁用频控）
+        cfg = _load_xueqiu_config({"xueqiu": {"interval_minutes": -5}})
+        assert cfg["INTERVAL_MINUTES"] == 0
 
 
 # ========================================
@@ -298,6 +319,108 @@ class TestLoginWallAlert:
             ["https://xueqiu.com/a"], state_path=state_path
         ) is True
         assert len(calls) == 2
+
+
+# ========================================
+# 雪球抓取频控（后续项②：interval_minutes）
+# ========================================
+
+class TestXueqiuIntervalGate:
+    """频控闸门 / 状态记录 / _crawl_xueqiu_data 接线"""
+
+    NOW = datetime(2026, 9, 8, 10, 0, 0, tzinfo=timezone.utc)
+
+    def _analyzer(self):
+        analyzer = _bare_analyzer(config=_xueqiu_config())
+        old = analyzer.ctx
+        analyzer.ctx = SimpleNamespace(
+            config=old.config,
+            format_time=old.format_time,
+            get_time=lambda: self.NOW,
+            get_mysql_pipeline=old.get_mysql_pipeline,
+        )
+        return analyzer
+
+    @staticmethod
+    def _write_state(path: str, minutes_ago: int, naive: bool = False) -> None:
+        last = TestXueqiuIntervalGate.NOW - timedelta(minutes=minutes_ago)
+        if naive:
+            last = last.replace(tzinfo=None)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"last_crawl": last.isoformat()}, f)
+
+    def test_gate_blocks_within_interval(self, tmp_path):
+        analyzer = self._analyzer()
+        state = str(tmp_path / "gate.json")
+        self._write_state(state, minutes_ago=30)  # 30 分钟前刚抓过，间隔 120 分钟
+        assert analyzer._xueqiu_crawl_gate(120, state_path=state) is False
+
+    def test_gate_allows_after_interval(self, tmp_path):
+        analyzer = self._analyzer()
+        state = str(tmp_path / "gate.json")
+        self._write_state(state, minutes_ago=180)  # 3 小时前，间隔 120 分钟
+        assert analyzer._xueqiu_crawl_gate(120, state_path=state) is True
+
+    def test_gate_tolerates_missing_or_corrupt_state(self, tmp_path):
+        analyzer = self._analyzer()
+        # 状态文件不存在 → 从未抓取，放行
+        assert analyzer._xueqiu_crawl_gate(
+            120, state_path=str(tmp_path / "missing.json")
+        ) is True
+        # 状态文件损坏 → 放行
+        corrupt = tmp_path / "corrupt.json"
+        corrupt.write_text("{broken", encoding="utf-8")
+        assert analyzer._xueqiu_crawl_gate(120, state_path=str(corrupt)) is True
+
+    def test_gate_handles_naive_timestamp(self, tmp_path):
+        """状态文件里是 naive 时间（历史版本）时按当前时区解释，不应崩溃。"""
+        analyzer = self._analyzer()
+        state = str(tmp_path / "gate.json")
+        self._write_state(state, minutes_ago=30, naive=True)
+        assert analyzer._xueqiu_crawl_gate(120, state_path=state) is False
+
+    def test_gate_disabled_when_zero(self):
+        analyzer = self._analyzer()
+        # interval<=0 直接放行，不读状态文件（路径随意，不产生 IO）
+        assert analyzer._xueqiu_crawl_gate(0, state_path="Z:/no/such/x.json") is True
+        assert analyzer._xueqiu_crawl_gate(-1) is True
+
+    def test_mark_xueqiu_crawled_writes_state(self, tmp_path):
+        analyzer = self._analyzer()
+        state = str(tmp_path / "gate.json")
+        analyzer._mark_xueqiu_crawled(state_path=state)
+        with open(state, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        assert data["last_crawl"].startswith("2026-09-08T10:00:00")
+
+    def test_crawl_skipped_within_interval(self):
+        """间隔未到时 _crawl_xueqiu_data 直接跳过，不构造 fetcher。"""
+        analyzer = self._analyzer()
+        analyzer.ctx.config = {
+            "XUEQIU": {**_xueqiu_config()["XUEQIU"], "INTERVAL_MINUTES": 120}
+        }
+        skipped = []
+        analyzer._xueqiu_crawl_gate = (
+            lambda interval, **kw: skipped.append(interval) or False
+        )
+        with patch.object(main_module, "XueqiuSeleniumFetcher", _FakeFetcher):
+            posts = analyzer._crawl_xueqiu_data()
+        assert posts == []
+        assert skipped == [120]
+        assert _FakeFetcher.instances == []  # 频控拦截，fetcher 未被构造
+
+    def test_crawl_calls_mark_after_run(self):
+        """interval=0（禁用频控）时正常抓取，跑完后记录抓取时间。"""
+        analyzer = self._analyzer()
+        analyzer.ctx.config = {
+            "XUEQIU": {**_xueqiu_config()["XUEQIU"], "INTERVAL_MINUTES": 0}
+        }
+        marked = []
+        analyzer._mark_xueqiu_crawled = lambda state_path=None: marked.append(state_path)
+        with patch.object(main_module, "XueqiuSeleniumFetcher", _FakeFetcher):
+            posts = analyzer._crawl_xueqiu_data()
+        assert len(posts) == 1
+        assert len(marked) == 1
 
 
 # ========================================

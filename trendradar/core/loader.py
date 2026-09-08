@@ -244,6 +244,16 @@ def _load_xueqiu_config(config_data: Dict) -> Dict:
     except (TypeError, ValueError):
         max_posts = 10
 
+    # 抓取频控（分钟，后续项②）：Selenium 单轮 60-90 秒且高频访问易触发风控，
+    # 间隔内不重复抓取；<=0 表示禁用频控（每轮都抓，不推荐）
+    interval_env = _get_env_int_or_none("XUEQIU_INTERVAL_MINUTES")
+    try:
+        interval_minutes = (
+            interval_env if interval_env is not None else int(xq.get("interval_minutes", 120))
+        )
+    except (TypeError, ValueError):
+        interval_minutes = 120
+
     return {
         "ENABLED": enabled_env if enabled_env is not None else bool(xq.get("enabled", False)),
         # Cookie：环境变量优先；留空时抓取阶段会判定未登录并优雅跳过
@@ -254,6 +264,7 @@ def _load_xueqiu_config(config_data: Dict) -> Dict:
         # chromedriver 显式路径：环境变量 XUEQIU_EXECUTABLE_PATH 优先；
         # 留空时走 selenium manager 自动匹配（网络受限环境可能挂起，建议显式指定）
         "EXECUTABLE_PATH": exec_path_env or str(xq.get("executable_path", "")).strip(),
+        "INTERVAL_MINUTES": max(0, interval_minutes),
     }
 
 

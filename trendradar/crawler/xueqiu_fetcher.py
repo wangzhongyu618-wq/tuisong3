@@ -106,9 +106,53 @@ class XueqiuSeleniumFetcher:
             # selenium 4.10+ 已移除 executable_path 参数，改用 Service 指定驱动路径
             from selenium.webdriver.chrome.service import Service
 
-            return webdriver.Chrome(options=options, service=Service(self.executable_path))
+            try:
+                return webdriver.Chrome(options=options, service=Service(self.executable_path))
+            except Exception as exc:
+                raise RuntimeError(self._driver_error_hint(exc)) from exc
         # 未指定驱动路径时交给 selenium manager 自动匹配
-        return webdriver.Chrome(options=options)
+        try:
+            return webdriver.Chrome(options=options)
+        except Exception as exc:
+            raise RuntimeError(self._driver_error_hint(exc)) from exc
+
+    @staticmethod
+    def _driver_error_hint(exc: Exception) -> str:
+        """把浏览器驱动启动异常翻译成带修复建议的提示。
+
+        chromedriver 与 Chrome 版本漂移、驱动缺失、Chrome 未安装、
+        selenium manager 网络受限是最常见的四类问题，报错原文是英文
+        且看不出修复路径，这里按关键词归类给出可操作建议（保留原文）。
+        """
+        raw = str(exc) or exc.__class__.__name__
+        low = raw.lower()
+        original = f"原始错误: {raw}"
+        if "session not created" in low or "only supports chrome version" in low:
+            return (
+                "chromedriver 与本机 Chrome 版本不匹配（session not created）。"
+                "请升级 chromedriver 与 Chrome 至匹配版本，或在 config xueqiu.executable_path"
+                f"（或环境变量 XUEQIU_EXECUTABLE_PATH）显式指定可用驱动路径。{original}"
+            )
+        if "cannot find chrome binary" in low or "chrome failed to start" in low:
+            return (
+                "未找到本机 Chrome 浏览器或浏览器启动失败。"
+                f"请安装 Chrome/Chromium（Linux 服务器请确认浏览器路径）。{original}"
+            )
+        if "chromedriver" in low and (
+            "executable needs to be in path" in low or "no such file" in low
+        ):
+            return (
+                "未找到 chromedriver 可执行文件。请安装与 Chrome 版本匹配的 chromedriver，"
+                "并通过 config xueqiu.executable_path"
+                f"（或环境变量 XUEQIU_EXECUTABLE_PATH）指定路径。{original}"
+            )
+        if "selenium manager" in low or "error managing" in low or "cannot be downloaded" in low:
+            return (
+                "selenium manager 自动获取 chromedriver 失败（常见于网络受限环境）。"
+                "请手动下载与 Chrome 匹配的 chromedriver，并在 config xueqiu.executable_path"
+                f"（或环境变量 XUEQIU_EXECUTABLE_PATH）指定路径。{original}"
+            )
+        return f"浏览器驱动启动失败。{original}"
 
     @staticmethod
     def _parse_cookies(raw: str) -> List[Tuple[str, str]]:

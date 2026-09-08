@@ -1,4 +1,6 @@
 # coding=utf-8
+import pytest
+
 import trendradar.crawler.xueqiu_fetcher as xueqiu_module
 from trendradar.crawler.xueqiu_fetcher import XueqiuSeleniumFetcher
 
@@ -340,4 +342,80 @@ def test_fetch_and_store_result_includes_login_state(monkeypatch):
     )
     assert empty["stored_count"] == 0
     assert empty["login_state"] == "unknown"
+
+
+# ========================================
+# 驱动启动错误提示（后续项③：版本漂移明确报错）
+# ========================================
+
+class _ExplodingChrome:
+    """webdriver 替身：Chrome 构造时抛版本不匹配异常"""
+
+    @staticmethod
+    def Chrome(options=None, service=None):
+        raise RuntimeError(
+            "Message: session not created: This version of ChromeDriver "
+            "only supports Chrome version 139"
+        )
+
+
+class _FakeOptions:
+    """ChromeOptions 替身：仅记录参数"""
+
+    def __init__(self):
+        self.args = []
+
+    def add_argument(self, arg):
+        self.args.append(arg)
+
+    def add_experimental_option(self, name, value):
+        pass
+
+
+def test_driver_error_hint_version_mismatch():
+    hint = XueqiuSeleniumFetcher._driver_error_hint(RuntimeError(
+        "Message: session not created: This version of ChromeDriver "
+        "only supports Chrome version 139"
+    ))
+    assert "版本不匹配" in hint
+    assert "XUEQIU_EXECUTABLE_PATH" in hint  # 给出修复路径
+    assert "session not created" in hint  # 保留原始错误
+
+
+def test_driver_error_hint_chrome_missing():
+    hint = XueqiuSeleniumFetcher._driver_error_hint(
+        RuntimeError("unknown error: cannot find Chrome binary"))
+    assert "Chrome" in hint
+    assert "安装" in hint
+
+
+def test_driver_error_hint_driver_missing():
+    hint = XueqiuSeleniumFetcher._driver_error_hint(
+        RuntimeError("'chromedriver' executable needs to be in PATH"))
+    assert "chromedriver" in hint
+    assert "路径" in hint
+
+
+def test_driver_error_hint_selenium_manager_network():
+    hint = XueqiuSeleniumFetcher._driver_error_hint(RuntimeError(
+        "There was an error managing chromedriver (cannot be downloaded)"))
+    assert "selenium manager" in hint
+    assert "网络受限" in hint
+
+
+def test_driver_error_hint_unknown_keeps_original():
+    hint = XueqiuSeleniumFetcher._driver_error_hint(ValueError("some other failure"))
+    assert "some other failure" in hint
+
+
+def test_create_driver_wraps_version_mismatch(monkeypatch):
+    """驱动启动失败时抛出带中文修复提示的 RuntimeError，且保留原因链。"""
+    monkeypatch.setattr(xueqiu_module, "webdriver", _ExplodingChrome)
+    monkeypatch.setattr(xueqiu_module, "ChromeOptions", _FakeOptions)
+
+    fetcher = XueqiuSeleniumFetcher(headless=True)
+    with pytest.raises(RuntimeError, match="版本不匹配") as excinfo:
+        fetcher._create_driver()
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert "only supports Chrome version 139" in str(excinfo.value.__cause__)
 

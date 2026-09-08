@@ -1299,6 +1299,12 @@ class NewsAnalyzer:
             print("[雪球] 未配置登录态 Cookie（环境变量 XUEQIU_COOKIES 或 config xueqiu.cookies），雪球限制未登录访问，跳过抓取")
             return []
 
+        # 频控（后续项②）：Selenium 单轮 60-90 秒且高频访问易触发风控，
+        # interval_minutes 内不重复抓取（<=0 禁用）；状态文件记上次抓取时间
+        interval_minutes = int(xq_config.get("INTERVAL_MINUTES", 120) or 0)
+        if not self._xueqiu_crawl_gate(interval_minutes):
+            return []
+
         mysql_pipeline = self.ctx.get_mysql_pipeline()
         all_posts: List[Dict] = []
         login_wall_urls: List[str] = []
@@ -1337,7 +1343,79 @@ class NewsAnalyzer:
         if login_wall_urls:
             self._notify_xueqiu_login_expired(login_wall_urls)
 
+        # 记录本轮抓取时间（频控按"执行过抓取"计，无论本轮是否有新增）
+        self._mark_xueqiu_crawled()
+
         return all_posts
+
+    def _xueqiu_crawl_gate(self, interval_minutes: int, state_path: Optional[str] = None) -> bool:
+        """雪球抓取频控闸门（后续项②）。
+
+        Selenium 单轮 60-90 秒且高频访问易触发风控，interval_minutes
+        内不重复抓取。状态文件（系统临时目录，测试可注入）记录上次
+        抓取时间；文件缺失/损坏/时间非法一律视为"从未抓取"放行。
+        interval_minutes <= 0 表示禁用频控（不读状态文件）。
+
+        Args:
+            interval_minutes: 频控间隔（分钟），<=0 禁用
+            state_path: 状态文件路径（默认系统临时目录，测试可注入）
+
+        Returns:
+            True = 允许本轮抓取；False = 间隔未到，应跳过本轮
+        """
+        if interval_minutes <= 0:
+            return True
+
+        import json
+        import tempfile
+        from datetime import datetime
+
+        get_time = getattr(self.ctx, "get_time", None)
+        if get_time is None:
+            return True  # 无时钟上下文（测试替身）时放行，频控失效优于误跳过
+
+        state_path = state_path or os.path.join(
+            tempfile.gettempdir(), "trendradar_xueqiu_last_crawl.json"
+        )
+        now = get_time()
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                last = datetime.fromisoformat(str(json.load(f).get("last_crawl", "")))
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=now.tzinfo)
+            elapsed = (now - last).total_seconds()
+        except (OSError, ValueError, TypeError):
+            return True  # 状态文件缺失/损坏/时间非法 → 视为从未抓取
+
+        if elapsed < interval_minutes * 60:
+            print(
+                f"[雪球] 距上次抓取不足 {interval_minutes} 分钟"
+                f"（xueqiu.interval_minutes={interval_minutes}），本轮跳过"
+            )
+            return False
+        return True
+
+    def _mark_xueqiu_crawled(self, state_path: Optional[str] = None) -> None:
+        """记录本轮雪球抓取时间到频控状态文件（后续项②）。
+
+        按"执行过抓取"计（无论本轮是否有新增/是否全部失败），
+        写入失败只忽略，不影响主流程。
+        """
+        import json
+        import tempfile
+
+        get_time = getattr(self.ctx, "get_time", None)
+        if get_time is None:
+            return  # 无时钟上下文（测试替身）时跳过状态记录
+
+        state_path = state_path or os.path.join(
+            tempfile.gettempdir(), "trendradar_xueqiu_last_crawl.json"
+        )
+        try:
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump({"last_crawl": get_time().isoformat()}, f, ensure_ascii=False)
+        except (OSError, ValueError):  # pragma: no cover
+            pass  # 状态记录失败不影响抓取主流程
 
     def _notify_xueqiu_login_expired(self, failed_urls: List[str], state_path: Optional[str] = None) -> bool:
         """雪球登录态失效告警（同一自然日最多推送一次）。
