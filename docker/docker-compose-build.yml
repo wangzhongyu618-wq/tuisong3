@@ -52,6 +52,18 @@ services:
       - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-}
       - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-}
       - S3_REGION=${S3_REGION:-}
+      # 雪球抓取（Selenium；镜像内已装 chromium/chromedriver）
+      - XUEQIU_COOKIES=${XUEQIU_COOKIES:-}
+      - XUEQIU_EXECUTABLE_PATH=${XUEQIU_EXECUTABLE_PATH:-/usr/bin/chromedriver}
+      - XUEQIU_INTERVAL_MINUTES=${XUEQIU_INTERVAL_MINUTES:-}
+      - XUEQIU_MAX_POSTS=${XUEQIU_MAX_POSTS:-}
+      # MySQL 入库
+      - MYSQL_ENABLED=${MYSQL_ENABLED:-}
+      - MYSQL_HOST=${MYSQL_HOST:-}
+      - MYSQL_PORT=${MYSQL_PORT:-}
+      - MYSQL_USERNAME=${MYSQL_USERNAME:-}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-}
       # 运行模式
       - CRON_SCHEDULE=${CRON_SCHEDULE:-*/30 * * * *}
       - RUN_MODE=${RUN_MODE:-cron}

@@ -8,7 +8,7 @@ ENV SUPERCRONIC_VERSION=v0.2.39
 
 RUN set -ex && \
     apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates && \
+    apt-get install -y --no-install-recommends curl ca-certificates chromium chromium-driver fonts-liberation && \
     case ${TARGETARCH} in \
     amd64) \
     export SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64; \
@@ -76,6 +76,7 @@ RUN sed -i 's/\r$//' /entrypoint.sh.tmp && \
 
 ENV PYTHONUNBUFFERED=1 \
     CONFIG_PATH=/app/config/config.yaml \
-    FREQUENCY_WORDS_PATH=/app/config/frequency_words.txt
+    FREQUENCY_WORDS_PATH=/app/config/frequency_words.txt \
+    XUEQIU_EXECUTABLE_PATH=/usr/bin/chromedriver
 
 ENTRYPOINT ["/entrypoint.sh"]
