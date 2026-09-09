@@ -27,14 +27,16 @@ $logDir = Join-Path $root "output"
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
 $logFile = Join-Path $logDir "trendradar_task.log"
 
-# 强制子进程 UTF-8 输出，规避 GBK 编码问题（与 __main__.py 的 reconfigure 双保险）
+# 强制子进程 UTF-8 + 无缓冲输出，规避 GBK 编码问题并让日志实时落盘
 $env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUNBUFFERED = "1"
 
 $python = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) { $python = "python" }
 
 "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] === TrendRadar 一轮运行开始 ===" | Out-File $logFile -Append -Encoding utf8
-& $python -m trendradar *>> $logFile
-"[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] === 运行结束，退出码 $LASTEXITCODE ===" | Out-File $logFile -Append -Encoding utf8
+cmd /c "`"$python`" -m trendradar >> `"$logFile`" 2>&1"
+$code = $LASTEXITCODE
+"[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] === 运行结束，退出码 $code ===" | Out-File $logFile -Append -Encoding utf8
 
-exit $LASTEXITCODE
+exit $code
