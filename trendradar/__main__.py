@@ -8,9 +8,21 @@ TrendRadar 主程序
 
 import argparse
 import os
+import sys
 import webbrowser
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# Windows 下 stdout/stderr 被重定向（计划任务日志文件、管道）时默认使用 GBK 编码，
+# print emoji（✅/❌/🎉 等）会抛 UnicodeEncodeError 直接中断主流程（--doctor 实测崩溃）。
+# 统一切到 UTF-8：控制台直连时本就是 UTF-8 行为不变；重定向落盘为 UTF-8 日志文件；
+# errors="replace" 保证极端字符不会再次中断程序。
+for _stream in (sys.stdout, sys.stderr):
+    if _stream and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # pragma: no cover
+            pass
 
 from trendradar.context import AppContext
 from trendradar import __version__

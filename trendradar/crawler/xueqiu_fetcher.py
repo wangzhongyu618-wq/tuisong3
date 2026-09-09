@@ -102,6 +102,23 @@ class XueqiuSeleniumFetcher:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
 
+        # Linux/容器环境兜底：Debian 等发行版的浏览器叫 chromium 且不在 selenium
+        # manager 的默认探测路径，不显式指定 binary 会在启动时报 cannot find chrome
+        # binary。按常见命名顺序定位；Windows 上 chrome 不在 PATH，保持原行为
+        # （由 selenium manager 处理）。
+        if not getattr(options, "binary_location", ""):
+            for _name in (
+                "chrome",
+                "google-chrome",
+                "google-chrome-stable",
+                "chromium",
+                "chromium-browser",
+            ):
+                _found = shutil.which(_name)
+                if _found:
+                    options.binary_location = _found
+                    break
+
         if self.executable_path:
             # selenium 4.10+ 已移除 executable_path 参数，改用 Service 指定驱动路径
             from selenium.webdriver.chrome.service import Service

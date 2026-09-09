@@ -364,6 +364,7 @@ class _FakeOptions:
 
     def __init__(self):
         self.args = []
+        self.binary_location = ""
 
     def add_argument(self, arg):
         self.args.append(arg)
@@ -418,4 +419,40 @@ def test_create_driver_wraps_version_mismatch(monkeypatch):
         fetcher._create_driver()
     assert isinstance(excinfo.value.__cause__, RuntimeError)
     assert "only supports Chrome version 139" in str(excinfo.value.__cause__)
+
+
+class _CapturingChrome:
+    """webdriver 模块替身：Chrome 属性捕获传入的 options 供断言"""
+
+    last_options = None
+
+    class Chrome:
+        def __init__(self, options=None, service=None):
+            _CapturingChrome.last_options = options
+
+
+def test_create_driver_probes_chromium_on_linux(monkeypatch):
+    """Linux 容器场景：浏览器不在 PATH 常规位置时按常见命名兜底定位。"""
+    monkeypatch.setattr(xueqiu_module, "webdriver", _CapturingChrome)
+    monkeypatch.setattr(xueqiu_module, "ChromeOptions", _FakeOptions)
+    monkeypatch.setattr(
+        xueqiu_module.shutil,
+        "which",
+        lambda name: "/usr/bin/chromium" if name == "chromium" else None,
+    )
+
+    fetcher = XueqiuSeleniumFetcher(headless=True)
+    fetcher._create_driver()
+    assert _CapturingChrome.last_options.binary_location == "/usr/bin/chromium"
+
+
+def test_create_driver_keeps_selenium_manager_when_no_browser(monkeypatch):
+    """找不到任何浏览器 binary 时不设置 binary_location，交给 selenium manager。"""
+    monkeypatch.setattr(xueqiu_module, "webdriver", _CapturingChrome)
+    monkeypatch.setattr(xueqiu_module, "ChromeOptions", _FakeOptions)
+    monkeypatch.setattr(xueqiu_module.shutil, "which", lambda name: None)
+
+    fetcher = XueqiuSeleniumFetcher(headless=True)
+    fetcher._create_driver()
+    assert _CapturingChrome.last_options.binary_location == ""
 
