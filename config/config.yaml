@@ -191,8 +191,8 @@ storage:
 # ===============================================================
 ai:
   model: "openai/glm-4.7-flash"
-  api_key: "58ee8ef517d0402f98c3f318e8062ca2.0Cby37ILwvXiyjZL"                          # 留白，请将重置后的智谱 API Key 填入 GitHub Secrets 的 AI_API_KEY
-  api_base: "[https://open.bigmodel.cn/api/paas/v4](https://open.bigmodel.cn/api/paas/v4)"
+  api_key: "58ee8ef517d0402f98c3f318e8062ca2.0Cby37ILwvXiyjZL"                                      # 留白，把重置后的智谱 Key 填进 GitHub Secrets 的 AI_API_KEY
+  api_base: "https://open.bigmodel.cn/api/paas/v4" # 纯文本地址，千万不要带中括号或圆括号
   timeout: 120
   temperature: 0.7
   max_tokens: 5000
