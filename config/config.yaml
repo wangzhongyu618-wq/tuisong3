@@ -3,190 +3,6 @@
 #                    Version: 2.4.0
 # ═══════════════════════════════════════════════════════════════
 
-
-# 可视化配置编辑器地址: https://sansan0.github.io/TrendRadar/
-
-
-# ===============================================================
-# 1. 基础设置
-# ===============================================================
-app:
-  # 时区配置（影响所有时间显示、调度系统判断、数据存储）
-  # 常用时区：
-  #   - Asia/Shanghai (北京时间 UTC+8)
-  #   - America/New_York (美东时间 UTC-5/-4)
-  #   - Europe/London (伦敦时间 UTC+0/+1)
-  # 完整时区列表: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-  timezone: "Asia/Shanghai"
-  show_version_update: true           # 是否显示版本更新提示（true=显示, false=隐藏）
-
-
-# ===============================================================
-# 1.5 调度系统 —— 什么时间做什么事
-#
-# 通过 timeline.yaml 里定义的时间段来自动决定：
-#   - 什么时候推送通知
-#   - 什么时候做 AI 分析
-#   - 用什么报告模式
-#
-# 快速上手：选一个预设模板，改 preset 的值就行
-#
-#   always_on        → 全天候，有新增即推送
-#   morning_evening  → 全天推送 + 晚间当日汇总（推荐）
-#   office_hours     → 工作日三段式（到岗→午间→收工），周末增量自由推
-#   night_owl        → 午后速览 + 深夜全天汇总
-#   custom           → 完全自定义，详见 timeline.yaml
-#
-# 详细时间线图请查看 config/timeline.yaml
-# ===============================================================
-schedule:
-  enabled: true                         # 是否启用调度系统（true=启用, false=关闭）—— P1-③ 已启用
-  preset: "morning_evening"             # 预设模板名称（见上方说明）
-
-
-# ===============================================================
-# 2. 数据源 - 热榜平台
-#
-# 数据来源于 newsnow 开源项目: https://github.com/ourongxing/newsnow
-# 你可以自行部署 newsnow 并将 api_url 指向你自己的实例
-#
-# enabled: 是否启用热榜抓取（总开关）
-# api_url: 热榜数据 API 地址（可选，留空使用默认地址）
-# sources: 平台列表
-#   - id: 平台唯一标识（勿修改）
-#   - name: 显示名称（可自定义，修改后不影响运行）
-#   - expected_domain: 域名安全校验（可选，建议配置）
-#     填写主域名（如 baidu.com），自动匹配该域名及其所有子域名
-#     校验返回数据中的链接是否为 HTTPS 且域名匹配，不匹配时丢弃该平台数据并记录警告
-#     可有效防范链接劫持或数据篡改
-#     只要 api_url 不是你自己部署的实例，都推荐配置 expected_domain
-# ===============================================================
-platforms:
-  enabled: true
-  api_url: ""
-  sources:
-    - id: "wallstreetcn-hot"
-      name: "华尔街见闻"
-      expected_domain: "wallstreetcn.com"
-    - id: "cls-hot"
-      name: "财联社热门"
-      expected_domain: "cls.cn"
-
-# ===============================================================
-# 3. 数据源 - RSS 订阅
-#
-# 与热榜数据分开存储，按时间流展示
-# 每个源配置：id(唯一标识)、name(显示名称)、url(订阅地址)
-# enabled: 可选，默认 true
-# max_age_days: 可选，覆盖全局 freshness_filter.max_age_days
-# ===============================================================
-rss:
-  enabled: true                       # 是否启用 RSS 抓取（true=启用, false=关闭）
-
-  # 文章新鲜度过滤（过滤超龄旧文章，避免重复推送）
-  # 仅在推送阶段过滤，所有文章仍会存入数据库
-  freshness_filter:
-    enabled: true                     # 是否启用新鲜度过滤（true=启用, false=关闭）
-
-    max_age_days: 1                   # 最大文章年龄（天）
-                                      # - 正整数：只推送 N 天内的文章
-                                      # - 0：禁用过滤，推送所有文章
-
-  # 单个 feed 可配置 max_age_days 覆盖全局设置：
-  # - 不配置：使用全局 freshness_filter.max_age_days（默认 3 天）
-  # - 正整数：覆盖全局设置，只推送此天数内的文章
-  # - 0：禁用此频道的新鲜度过滤，推送所有文章
-  feeds:
-    - id: "wsj-markets"
-      name: "华尔街日报-金融市场"
-      url: "https://cn.wsj.com/zh-hans/rss/markets.xml"
-
-    - id: "jin10-macro"
-      name: "金十数据-宏观与美联储"
-      url: "https://rsshub.app/jin10/topic/504"
-
-    - id: "hacker-news"
-      name: "Hacker News"
-      url: "https://hnrss.org/frontpage"
-
-    - id: "ruanyifeng"
-      name: "阮一峰的网络日志"
-      url: "http://www.ruanyifeng.com/blog/atom.xml"
-      enabled: false                  # 禁用
-      # max_age_days: 3               # 示例：推送 3 天内的文章（更新较慢的博客）
-      
-    - id: "yahoo-finance"
-      name: "雅虎财经"
-      url: "https://finance.yahoo.com/news/rssindex"
-
-
-# ===============================================================
-# 3.5 数据源 - 雪球（Selenium 大V动态）
-#
-# 由 trendradar/crawler/xueqiu_fetcher.py 读取（独立抓取模块，
-# examples/xueqiu_mysql_pipeline_demo.py 提供完整接入示例）。
-# 雪球对未登录访客限制严格，抓取大V动态需要登录态 Cookie。
-#
-# Cookie 获取方式：
-#   浏览器登录 xueqiu.com → F12 打开开发者工具 → Network →
-#   刷新页面 → 点击任意 xueqiu.com 请求 → 复制请求头中 "Cookie:"
-#   后面的整串内容（形如 xq_a_token=...; xqat=...; ...）
-#
-# 注入优先级：环境变量 XUEQIU_COOKIES > 本文件 cookies 配置。
-# 安全提示：本文件会被 git 跟踪，切勿把真实 Cookie 写在这里，
-#           建议只通过环境变量注入（当前终端会话）:
-#             set XUEQIU_COOKIES=xq_a_token=...;xqat=...
-#           （持久化到用户级，新开终端生效）:
-#             setx XUEQIU_COOKIES "xq_a_token=...;xqat=..."
-# ===============================================================
-xueqiu:
-  enabled: true                         # 主流程开关：true 时每轮运行自动抓取下方主页的最新动态（P1-① 已接线；Cookie 建议通过进程环境变量 XUEQIU_COOKIES 或 CI secrets 注入，勿持久化落盘）
-  cookies: ""                           # 登录态 Cookie（留空则回读环境变量 XUEQIU_COOKIES；勿写真实值进本文件）
-  headless: true                        # 无头模式（调试时可改为 false 观察浏览器行为）
-  executable_path: ""                   # chromedriver 路径（留空走 selenium manager 自动匹配；网络受限环境或版本漂移报错时建议显式指定，也可用环境变量 XUEQIU_EXECUTABLE_PATH）
-  target_urls: ["https://xueqiu.com/"]  # 登录后首页时间线（热门/关注动态流）；要盯特定大V就加 "https://xueqiu.com/用户ID"
-  max_posts: 10                         # 每个主页最多抓取的最新动态条数
-  interval_minutes: 120                 # 抓取频控（分钟）：Selenium 单轮约 60-90 秒，间隔内直接跳过本轮；0 或负数=每轮都抓（不推荐）
-
-# 主流程接线说明（P1-①）：
-#   enabled=true 且配置了 target_urls + Cookie 后，每轮运行会自动抓取雪球动态：
-#   1. 帖子文本写入 MySQL raw_data_feed（source_type=xueqiu_v_dynamic）
-#   2. 帖子以「雪球大V动态」词组合入 RSS 统计区，进入 AI 分析与实体提取
-#      （financial_sentiment 结构化沉淀，QMT 下游可消费）
-#   3. 未配置 Cookie 或 target_urls 时优雅跳过，不影响主流程
-
-
-# ===============================================================
-# 4. 报告模式
-# ===============================================================
-report:
-  mode: "incremental"                     # 报告模式（开启 schedule 后作为默认值，会被 timeline 时段覆盖）
-                                      # daily = 当日汇总，按时推送当天所有匹配新闻（会包含之前推过的）
-                                      # current = 当前榜单，按时推送当前在榜的匹配新闻（持续在榜的每次都出现）
-                                      # incremental = 增量监控，只推送新增内容，零重复（没有新增时不推送）
-
-  display_mode: "keyword"             # 分组维度
-                                      # keyword = 按关键词分组显示
-                                      # platform = 按平台/来源分组显示
-
-  sort_by_position_first: false       # 关键词模式排序（仅 display_mode=keyword 时生效）
-                                      # true = 按 frequency_words.txt 的定义顺序
-                                      # false = 按匹配到的热点条数排序（多的在前）
-
-  rank_threshold: 5                   # 排名高亮阈值（影响展示强调，不改变抓取范围）
-
-  max_news_per_keyword: 3             # 每个关键词/标签最大显示数量（0=不限制，仅影响展示裁剪）
-
-
-# ===============================================================
-# 4.5 ```yaml
-# ═══════════════════════════════════════════════════════════════
-#                    TrendRadar 配置文件
-#                      Version: 2.4.0
-# ═══════════════════════════════════════════════════════════════
-
-# 可视化配置编辑器地址: [https://sansan0.github.io/TrendRadar/](https://sansan0.github.io/TrendRadar/)
-
 # ===============================================================
 # 1. 基础设置
 # ===============================================================
@@ -198,7 +14,7 @@ app:
 # 1.5 调度系统
 # ===============================================================
 schedule:
-  enabled: true
+  enabled: false                       # 改为 false：取消固定时段限制，每次运行抓到新消息即刻推送
   preset: "morning_evening"
 
 # ===============================================================
@@ -237,15 +53,15 @@ rss:
       name: "阮一峰的网络日志"
       url: "[http://www.ruanyifeng.com/blog/atom.xml](http://www.ruanyifeng.com/blog/atom.xml)"
       enabled: false
-    - id: "yahoo-finance"
-      name: "雅虎财经"
-      url: "[https://finance.yahoo.com/news/rssindex](https://finance.yahoo.com/news/rssindex)"
+    - id: "cnbc-markets"
+      name: "CNBC美股市场"
+      url: "[https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664](https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664)"
 
 # ===============================================================
 # 3.5 数据源 - 雪球（Selenium 大V动态）
 # ===============================================================
 xueqiu:
-  enabled: true
+  enabled: false                       # GitHub Actions 无登录 Cookie 时建议关闭，避免多余日志
   cookies: ""
   headless: true
   executable_path: ""
@@ -261,7 +77,7 @@ report:
   display_mode: "keyword"
   sort_by_position_first: false
   rank_threshold: 5
-  max_news_per_keyword: 3
+  max_news_per_keyword: 5
 
 # ===============================================================
 # 4.5 筛选策略
@@ -274,10 +90,10 @@ filter:
 # 4.6 AI 智能筛选配置
 # ===============================================================
 ai_filter:
-  batch_size: 2          # 适配 GLM-4.7 的并发限制，避免触发限流警告
+  batch_size: 2                        # 适配 GLM-4.7 并发限制
   batch_interval: 2
-  min_score: 0.7
-  reclassify_threshold: 0.6
+  min_score: 0.55                      # 适当放宽阈值，防止财经热榜被过度过滤
+  reclassify_threshold: 0.55
   prompt_file: "prompt.txt"
   extract_prompt_file: "extract_prompt.txt"
   update_tags_prompt_file: "update_tags_prompt.txt"
@@ -287,24 +103,24 @@ ai_filter:
 # ===============================================================
 display:
   region_order:
+    - ai_analysis
     - new_items
     - hotlist
     - rss
     - standalone
-    - ai_analysis
   regions:
     hotlist: true
-    new_items: false
+    new_items: true
     rss: true
     standalone: false
     ai_analysis: true
   standalone:
-    platforms: ["wallstreetcn-hot"]
+    platforms: ["wallstreetcn-hot", "cls-hot"]
     rss_feeds: []
     max_items: 10
 
 # ===============================================================
-# 6. 推送通知
+# 6. 推送通知（由 GitHub Secrets 注入）
 # ===============================================================
 notification:
   enabled: true
@@ -348,7 +164,7 @@ storage:
     html: true
   local:
     data_dir: "output"
-    retention_days: 0
+    retention_days: 30
   remote:
     retention_days: 0
     endpoint_url: ""
@@ -357,7 +173,7 @@ storage:
     secret_access_key: ""
     region: ""
   mysql:
-    enabled: true
+    enabled: false                     # 关闭 MySQL，消除 GitHub Actions 上的连接拒绝刷屏报错
     host: "localhost"
     port: 3306
     username: "root"
@@ -375,12 +191,12 @@ storage:
 # ===============================================================
 ai:
   model: "openai/glm-4.7-flash"
-  api_key: "7aa41ba5231a4e3a8eac405de86265b6.bccqwYY1WLlK3i3j"
+  api_key: ""                          # 留白，请将重置后的智谱 API Key 填入 GitHub Secrets 的 AI_API_KEY
   api_base: "[https://open.bigmodel.cn/api/paas/v4](https://open.bigmodel.cn/api/paas/v4)"
   timeout: 120
-  temperature: 1.0
+  temperature: 0.7
   max_tokens: 5000
-  num_retries: 1
+  num_retries: 2
   fallback_models: []
 
 # ===============================================================
@@ -392,7 +208,7 @@ ai_analysis:
   prompt_file: "ai_analysis_prompt.txt"
   mode: "follow_report"
   max_news_for_analysis: 150
-  include_rss: false
+  include_rss: true
   include_standalone: true
   include_rank_timeline: true
   enable_sentiment_extraction: true
@@ -407,12 +223,12 @@ ai_translation:
   enabled: true
   language: "中文"
   prompt_file: "ai_translation_prompt.txt"
-  batch_size: 2          # 适配 GLM-4.7 的并发限制
+  batch_size: 2                        # 适配 GLM-4.7 的并发限制
   batch_interval: 2
   scope:
-    hotlist: true
-    rss: false
-    standalone: true
+    hotlist: false
+    rss: true
+    standalone: false
 
 # ===============================================================
 # 11. 高级设置
